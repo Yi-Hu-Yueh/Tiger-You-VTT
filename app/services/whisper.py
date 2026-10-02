@@ -18,6 +18,7 @@ class TranscriptionResult:
     device: str
     compute_type: str
     duration_seconds: float
+    stopped: bool = False
 
 
 def cuda_device_count() -> int:
@@ -161,12 +162,25 @@ class WhisperTranscriber:
         audio_path: Path,
         diagnostic_callback: Callable[[dict[str, Any]], None] | None = None,
         vad_filter: bool = True,
+        on_segment: Callable[[dict[str, Any]], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        stop_observed: list[bool] | None = None,
     ) -> tuple[list[dict[str, Any]], Any]:
         generated_segments, info = model.transcribe(
             str(audio_path), beam_size=5, vad_filter=vad_filter
         )
-        raw_segments = []
-        for segment in generated_segments:
+        normalized_segments: list[dict[str, Any]] = []
+        previous_start = -1.0
+        segment_iterator = iter(generated_segments)
+        while True:
+            if should_stop is not None and should_stop():
+                if stop_observed is not None:
+                    stop_observed[0] = True
+                break
+            try:
+                segment = next(segment_iterator)
+            except StopIteration:
+                break
             raw_segment = {
                 "start": segment.start,
                 "end": segment.end,
@@ -187,21 +201,54 @@ class WhisperTranscriber:
                         ),
                     }
                 )
-            raw_segments.append(raw_segment)
-        return normalize_transcribed_segments(raw_segments), info
+            normalized = normalize_transcribed_segments([raw_segment])
+            raw_start = float(raw_segment["start"])
+            if raw_start < previous_start:
+                raise ValueError(
+                    "Whisper returned an invalid segment time range"
+                )
+            previous_start = raw_start
+            if normalized:
+                completed_segment = normalized[0]
+                normalized_segments.append(completed_segment)
+                if on_segment is not None:
+                    on_segment(dict(completed_segment))
+            if should_stop is not None and should_stop():
+                if stop_observed is not None:
+                    stop_observed[0] = True
+                break
+        return normalized_segments, info
 
-    def transcribe(self, audio_path: Path) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio_path: Path,
+        on_segment: Callable[[dict[str, Any]], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> TranscriptionResult:
         model = self._get_model()
         started = perf_counter()
+        stop_observed = [False]
         try:
-            segments, info = self._decode(model, audio_path)
+            segments, info = self._decode(
+                model,
+                audio_path,
+                on_segment=on_segment,
+                should_stop=should_stop,
+                stop_observed=stop_observed,
+            )
         except VideoExtractionError:
             raise
         except Exception as exc:
             if self.settings.device == "auto" and self._device == "cuda":
                 model = self._activate_cpu_fallback()
                 try:
-                    segments, info = self._decode(model, audio_path)
+                    segments, info = self._decode(
+                        model,
+                        audio_path,
+                        on_segment=on_segment,
+                        should_stop=should_stop,
+                        stop_observed=stop_observed,
+                    )
                 except Exception as fallback_exc:
                     raise VideoExtractionError(
                         502,
@@ -216,10 +263,22 @@ class WhisperTranscriber:
                 ) from exc
 
         duration = round(perf_counter() - started, 3)
-        if not segments:
+        if (
+            not segments
+            and not stop_observed[0]
+            and should_stop is not None
+            and should_stop()
+        ):
+            stop_observed[0] = True
+        if not segments and not stop_observed[0]:
             try:
                 segments, retry_info = self._decode(
-                    model, audio_path, vad_filter=False
+                    model,
+                    audio_path,
+                    vad_filter=False,
+                    on_segment=on_segment,
+                    should_stop=should_stop,
+                    stop_observed=stop_observed,
                 )
             except VideoExtractionError:
                 raise
@@ -232,7 +291,7 @@ class WhisperTranscriber:
             if segments:
                 info = retry_info
 
-        if not segments:
+        if not segments and not stop_observed[0]:
             raise VideoExtractionError(
                 502,
                 "whisper_empty_transcript",
@@ -241,11 +300,14 @@ class WhisperTranscriber:
 
         language = getattr(info, "language", None)
         if not isinstance(language, str) or not language.strip():
-            raise VideoExtractionError(
-                502,
-                "whisper_transcription_failed",
-                "Local faster-whisper did not report a detected language.",
-            )
+            if stop_observed[0]:
+                language = "und"
+            else:
+                raise VideoExtractionError(
+                    502,
+                    "whisper_transcription_failed",
+                    "Local faster-whisper did not report a detected language.",
+                )
 
         return TranscriptionResult(
             segments=segments,
@@ -254,11 +316,16 @@ class WhisperTranscriber:
             device=self._device or "cpu",
             compute_type=self._compute_type or self._compute_for("cpu"),
             duration_seconds=duration,
+            stopped=stop_observed[0],
         )
 
 
 TRANSCRIBER = WhisperTranscriber()
 
 
-def transcribe_audio(audio_path: Path) -> TranscriptionResult:
-    return TRANSCRIBER.transcribe(audio_path)
+def transcribe_audio(
+    audio_path: Path,
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> TranscriptionResult:
+    return TRANSCRIBER.transcribe(audio_path, on_segment, should_stop)

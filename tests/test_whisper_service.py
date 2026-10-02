@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -263,6 +264,97 @@ def test_empty_vad_result_and_empty_retry_remain_controlled() -> None:
         {"beam_size": 5, "vad_filter": True},
         {"beam_size": 5, "vad_filter": False},
     ]
+
+
+def test_stop_before_first_segment_does_not_trigger_vad_retry() -> None:
+    class LazyModel:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.generator_consumed = False
+
+        def transcribe(self, _audio_path: str, **kwargs):
+            self.calls.append(kwargs)
+
+            def segments():
+                self.generator_consumed = True
+                yield SimpleNamespace(start=0.0, end=1.0, text="Too late")
+
+            return segments(), SimpleNamespace(language="en")
+
+    model = LazyModel()
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: model,
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(Path("audio.webm"), should_stop=lambda: True)
+
+    assert result.stopped is True
+    assert result.segments == []
+    assert model.generator_consumed is False
+    assert model.calls == [{"beam_size": 5, "vad_filter": True}]
+
+
+def test_stop_arriving_between_empty_attempt_and_retry_prevents_retry() -> None:
+    calls: list[dict[str, object]] = []
+    stop_checks = 0
+
+    class EmptyModel:
+        def transcribe(self, _audio_path: str, **kwargs):
+            calls.append(kwargs)
+            return iter([]), SimpleNamespace(language="en")
+
+    def should_stop() -> bool:
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 2
+
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: EmptyModel(),
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(Path("audio.webm"), should_stop=should_stop)
+
+    assert result.stopped is True
+    assert result.segments == []
+    assert calls == [{"beam_size": 5, "vad_filter": True}]
+
+
+def test_stop_after_completed_segments_preserves_them_without_restart() -> None:
+    stop_requested = Event()
+    observed: list[dict[str, object]] = []
+
+    class SegmentModel:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def transcribe(self, _audio_path: str, **kwargs):
+            self.calls.append(kwargs)
+            return iter(
+                [
+                    SimpleNamespace(start=0.0, end=1.0, text="A"),
+                    SimpleNamespace(start=1.0, end=2.0, text="B"),
+                    SimpleNamespace(start=2.0, end=3.0, text="C"),
+                ]
+            ), SimpleNamespace(language="en")
+
+    def on_segment(segment: dict[str, object]) -> None:
+        observed.append(segment)
+        if len(observed) == 1:
+            stop_requested.set()
+
+    model = SegmentModel()
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: model,
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(Path("audio.webm"), on_segment, stop_requested.is_set)
+
+    assert result.stopped is True
+    assert result.segments == [
+        {"start": 0.0, "end": 1.0, "text": "A"},
+    ]
+    assert observed == result.segments
+    assert model.calls == [{"beam_size": 5, "vad_filter": True}]
 
 
 def test_model_load_failure_is_controlled() -> None:

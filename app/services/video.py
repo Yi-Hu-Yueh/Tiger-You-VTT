@@ -359,16 +359,25 @@ def extract_embedded_vtt(
         ) from exc
 
 
-def _transcribe_local_media(media_path: Path) -> Any:
+def _transcribe_local_media(
+    media_path: Path,
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Any:
     from app.services.whisper import transcribe_audio
 
-    return transcribe_audio(media_path)
+    if on_segment is None and should_stop is None:
+        return transcribe_audio(media_path)
+    return transcribe_audio(media_path, on_segment, should_stop)
 
 
 def process_uploaded_video(
     media_path: Path,
     filename: str,
     working_directory: Path,
+    *,
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     media = probe_media(media_path)
     selected = select_embedded_subtitle(media)
@@ -407,9 +416,29 @@ def process_uploaded_video(
             "The uploaded video contains neither a usable text subtitle nor audio.",
         )
 
-    transcription = _transcribe_local_media(media_path)
+    if should_stop is not None and should_stop():
+        return {
+            "_stopped": True,
+            "filename": filename,
+            "language": "und",
+            "type": "transcribed",
+            "selection_mode": "fallback",
+            "segment_count": 0,
+            "duration": media.duration,
+            "segments": [],
+            "vtt": transcript_to_vtt([]),
+            "txt": "",
+            "srt": "",
+        }
+
+    if on_segment is None and should_stop is None:
+        transcription = _transcribe_local_media(media_path)
+    else:
+        transcription = _transcribe_local_media(
+            media_path, on_segment, should_stop
+        )
     segments = transcription.segments
-    return {
+    result = {
         "filename": filename,
         "language": transcription.language,
         "type": "transcribed",
@@ -425,3 +454,6 @@ def process_uploaded_video(
         "transcription_compute_type": transcription.compute_type,
         "transcription_duration": transcription.duration_seconds,
     }
+    if transcription.stopped:
+        result["_stopped"] = True
+    return result

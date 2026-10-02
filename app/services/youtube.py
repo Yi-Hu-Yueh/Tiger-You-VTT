@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -398,14 +398,50 @@ def _download_audio_only(url: str, directory: Path) -> Path:
     return audio_files[0]
 
 
-def _transcribe_audio(audio_path: Path) -> Any:
+def _transcribe_audio(
+    audio_path: Path,
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Any:
     from app.services.whisper import transcribe_audio
 
-    return transcribe_audio(audio_path)
+    if on_segment is None and should_stop is None:
+        return transcribe_audio(audio_path)
+    return transcribe_audio(audio_path, on_segment, should_stop)
+
+
+def _stopped_transcription_result(
+    info: Mapping[str, Any],
+) -> dict[str, Any]:
+    from app.services.transcript import transcript_to_vtt
+
+    duration = info.get("duration")
+    normalized_duration = (
+        float(duration)
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        else None
+    )
+    return {
+        "_stopped": True,
+        "video_id": _required_text(info, "id", "video ID"),
+        "title": _required_text(info, "title", "title"),
+        "language": "und",
+        "type": "transcribed",
+        "selection_mode": "fallback",
+        "segment_count": 0,
+        "duration": normalized_duration,
+        "segments": [],
+        "vtt": transcript_to_vtt([]),
+        "txt": "",
+        "srt": "",
+    }
 
 
 def _fallback_transcription(
-    url: str, info: Mapping[str, Any]
+    url: str,
+    info: Mapping[str, Any],
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from app.services.transcript import (
         transcript_to_srt,
@@ -420,9 +456,19 @@ def _fallback_transcription(
             "No usable audio-only stream is available for transcription.",
         )
 
+    if should_stop is not None and should_stop():
+        return _stopped_transcription_result(info)
+
     with TemporaryDirectory(prefix="tiger-you-vtt-audio-") as temporary_directory:
         audio_path = _download_audio_only(url, Path(temporary_directory))
-        transcription = _transcribe_audio(audio_path)
+        if should_stop is not None and should_stop():
+            return _stopped_transcription_result(info)
+        if on_segment is None and should_stop is None:
+            transcription = _transcribe_audio(audio_path)
+        else:
+            transcription = _transcribe_audio(
+                audio_path, on_segment, should_stop
+            )
 
     segments = transcription.segments
     duration = info.get("duration")
@@ -431,7 +477,7 @@ def _fallback_transcription(
         if isinstance(duration, (int, float)) and not isinstance(duration, bool)
         else None
     )
-    return {
+    result = {
         "video_id": _required_text(info, "id", "video ID"),
         "title": _required_text(info, "title", "title"),
         "language": transcription.language,
@@ -448,16 +494,24 @@ def _fallback_transcription(
         "transcription_compute_type": transcription.compute_type,
         "transcription_duration": transcription.duration_seconds,
     }
+    if transcription.stopped:
+        result["_stopped"] = True
+    return result
 
 
 def get_subtitle(
     url: str,
     language: str | None = None,
     track_type: Literal["manual", "auto"] | None = None,
+    *,
+    on_segment: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from app.services.transcript import parse_vtt, transcript_to_srt, transcript_to_txt
 
     info = _extract_raw_info(url)
+    if should_stop is not None and should_stop():
+        return _stopped_transcription_result(info)
     if (language is None) != (track_type is None):
         raise VideoExtractionError(
             422,
@@ -471,7 +525,11 @@ def get_subtitle(
         except VideoExtractionError as exc:
             if exc.code != "no_subtitles_available":
                 raise
-            return _fallback_transcription(url, info)
+            if on_segment is None and should_stop is None:
+                return _fallback_transcription(url, info)
+            return _fallback_transcription(
+                url, info, on_segment, should_stop
+            )
     else:
         _validate_selected_track(info, language, track_type)
         selected = SelectedSubtitleTrack(language, track_type, "explicit")

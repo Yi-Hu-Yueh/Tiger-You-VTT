@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tiger-You-VTT</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #17202a; }
+    main { max-width: 850px; margin: 2rem auto; padding: 1.5rem; background: white; border-radius: 12px; box-shadow: 0 8px 30px #17202a18; }
+    h1 { margin-top: 0; }
+    fieldset { border: 1px solid #ccd3da; border-radius: 8px; margin-bottom: 1rem; }
+    .source { display: grid; gap: .75rem; margin: 1rem 0; }
+    input[type="url"], input[type="file"], textarea { box-sizing: border-box; width: 100%; }
+    input[type="url"], input[type="file"] { padding: .65rem; }
+    textarea { min-height: 260px; padding: .8rem; resize: vertical; }
+    button { border: 0; border-radius: 7px; padding: .7rem 1rem; cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .5; }
+    #startButton { background: #1668dc; color: white; }
+    #stopButton { background: #c62828; color: white; }
+    .controls, .downloads { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+    .status { padding: .75rem; background: #eef3f8; border-radius: 7px; }
+    .note { color: #52606d; font-size: .92rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Tiger-You-VTT 字幕工具</h1>
+  <fieldset>
+    <legend>來源</legend>
+    <label><input type="radio" name="mode" value="youtube" checked> YouTube 網址</label>
+    <label><input type="radio" name="mode" value="upload"> 上傳影片</label>
+    <div class="source">
+      <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
+      <input id="videoFile" type="file" accept="video/*" hidden>
+    </div>
+  </fieldset>
+
+  <div class="controls">
+    <button id="startButton" type="button">開始取得字幕</button>
+    <button id="stopButton" type="button" disabled>停止</button>
+  </div>
+  <p class="note">停止會在目前安全的字幕片段完成後生效。工作與結果只會保留到目前伺服器程序結束為止。</p>
+
+  <div class="status">
+    狀態：<strong id="statusText">尚未開始</strong>
+    ／ 字幕片段：<strong id="segmentCount">0</strong>
+  </div>
+  <p id="message" aria-live="polite"></p>
+  <textarea id="transcriptText" readonly placeholder="取得的字幕會顯示在這裡"></textarea>
+
+  <div class="downloads">
+    <button type="button" data-format="txt" disabled>下載 TXT</button>
+    <button type="button" data-format="vtt" disabled>下載 VTT</button>
+    <button type="button" data-format="srt" disabled>下載 SRT</button>
+  </div>
+</main>
+
+<script>
+  const terminalStates = new Set(["completed", "stopped", "failed"]);
+  let activeJobId = null;
+  let latestJob = null;
+  let pollTimer = null;
+
+  const startButton = document.querySelector("#startButton");
+  const stopButton = document.querySelector("#stopButton");
+  const statusText = document.querySelector("#statusText");
+  const segmentCount = document.querySelector("#segmentCount");
+  const transcriptText = document.querySelector("#transcriptText");
+  const message = document.querySelector("#message");
+  const youtubeUrl = document.querySelector("#youtubeUrl");
+  const videoFile = document.querySelector("#videoFile");
+  const downloadButtons = document.querySelectorAll("[data-format]");
+
+  document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      const upload = radio.checked && radio.value === "upload";
+      videoFile.hidden = !upload;
+      youtubeUrl.hidden = upload;
+    });
+  });
+
+  function updateDisplay(job) {
+    latestJob = job;
+    statusText.textContent = job.status;
+    segmentCount.textContent = job.segment_count;
+    transcriptText.value = job.txt;
+    const active = ["queued", "running", "stopping"].includes(job.status);
+    stopButton.disabled = !active;
+    startButton.disabled = active;
+    downloadButtons.forEach((button) => {
+      button.disabled = !terminalStates.has(job.status);
+    });
+    if (job.status === "stopped") {
+      message.textContent = "已停止，已保留目前取得的字幕";
+    } else if (job.status === "failed") {
+      const detail = job.error ? `${job.error.code}: ${job.error.message}` : "背景工作失敗";
+      message.textContent = detail;
+    } else if (job.status === "completed") {
+      message.textContent = "字幕處理完成";
+    }
+  }
+
+  async function pollJob() {
+    if (!activeJobId) return;
+    const response = await fetch(`/api/jobs/${activeJobId}`);
+    const job = await response.json();
+    updateDisplay(job);
+    if (!terminalStates.has(job.status)) {
+      pollTimer = setTimeout(pollJob, 1000);
+    }
+  }
+
+  startButton.addEventListener("click", async () => {
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    let response;
+    message.textContent = "";
+    transcriptText.value = "";
+    segmentCount.textContent = "0";
+    if (mode === "upload") {
+      if (!videoFile.files.length) {
+        message.textContent = "請選擇影片檔案";
+        return;
+      }
+      const body = new FormData();
+      body.append("file", videoFile.files[0]);
+      response = await fetch("/api/jobs/video", { method: "POST", body });
+    } else {
+      response = await fetch("/api/jobs/youtube", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: youtubeUrl.value })
+      });
+    }
+    const payload = await response.json();
+    if (!response.ok) {
+      message.textContent = payload.detail?.message || "無法建立工作";
+      return;
+    }
+    activeJobId = payload.job_id;
+    updateDisplay({ ...payload, segment_count: 0, txt: "" });
+    clearTimeout(pollTimer);
+    pollJob();
+  });
+
+  stopButton.addEventListener("click", async () => {
+    if (!activeJobId) return;
+    stopButton.disabled = true;
+    stopButton.textContent = "停止中...";
+    statusText.textContent = "stopping";
+    const response = await fetch(`/api/jobs/${activeJobId}/stop`, { method: "POST" });
+    const job = await response.json();
+    updateDisplay(job);
+    stopButton.textContent = "停止";
+    if (!terminalStates.has(job.status)) {
+      clearTimeout(pollTimer);
+      pollJob();
+    }
+  });
+
+  downloadButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!latestJob) return;
+      const format = button.dataset.format;
+      const content = latestJob[format] || "";
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `transcript.${format}`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    });
+  });
+</script>
+</body>
+</html>
