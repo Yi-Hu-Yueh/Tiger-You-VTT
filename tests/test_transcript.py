@@ -194,6 +194,22 @@ def test_whisper_normalization_does_not_remove_repeated_speech() -> None:
     ]
 
 
+def test_whisper_timestamp_and_serializers_do_not_stretch_segment() -> None:
+    segments = normalize_transcribed_segments(
+        [{"start": 71.14, "end": 72.70, "text": "Timed speech"}]
+    )
+
+    assert segments == [
+        {"start": 71.14, "end": 72.7, "text": "Timed speech"}
+    ]
+    assert transcript_to_vtt(segments) == (
+        "WEBVTT\n\n00:01:11.140 --> 00:01:12.700\nTimed speech\n"
+    )
+    assert transcript_to_srt(segments) == (
+        "1\n00:01:11,140 --> 00:01:12,700\nTimed speech\n"
+    )
+
+
 def test_generates_numbered_srt_with_millisecond_timestamps() -> None:
     srt = transcript_to_srt(
         [

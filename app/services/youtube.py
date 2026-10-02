@@ -7,6 +7,8 @@ from typing import Any, Literal
 import yt_dlp
 from yt_dlp.utils import DownloadError, UnsupportedError
 
+from app.services.errors import VideoExtractionError
+
 
 YDL_OPTIONS: dict[str, Any] = {
     "quiet": True,
@@ -16,14 +18,6 @@ YDL_OPTIONS: dict[str, Any] = {
     "skip_download": True,
     "socket_timeout": 15,
 }
-
-
-class VideoExtractionError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
-        self.message = message
 
 
 @dataclass(frozen=True)

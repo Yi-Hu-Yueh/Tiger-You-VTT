@@ -7,7 +7,7 @@ from typing import Any
 import webvtt
 from webvtt.errors import MalformedFileError
 
-from app.services.youtube import VideoExtractionError
+from app.services.errors import VideoExtractionError
 
 
 _WHITESPACE = re.compile(r"\s+")

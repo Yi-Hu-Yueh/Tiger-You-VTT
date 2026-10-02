@@ -6,8 +6,8 @@ from time import perf_counter
 from typing import Any
 
 from app.config import WHISPER_SETTINGS, WhisperSettings
+from app.services.errors import VideoExtractionError
 from app.services.transcript import normalize_transcribed_segments
-from app.services.youtube import VideoExtractionError
 
 
 @dataclass(frozen=True)
@@ -156,18 +156,38 @@ class WhisperTranscriber:
             return model
 
     @staticmethod
-    def _decode(model: Any, audio_path: Path) -> tuple[list[dict[str, Any]], Any]:
+    def _decode(
+        model: Any,
+        audio_path: Path,
+        diagnostic_callback: Callable[[dict[str, Any]], None] | None = None,
+        vad_filter: bool = True,
+    ) -> tuple[list[dict[str, Any]], Any]:
         generated_segments, info = model.transcribe(
-            str(audio_path), beam_size=5, vad_filter=True
+            str(audio_path), beam_size=5, vad_filter=vad_filter
         )
-        raw_segments = [
-            {
+        raw_segments = []
+        for segment in generated_segments:
+            raw_segment = {
                 "start": segment.start,
                 "end": segment.end,
                 "text": segment.text,
             }
-            for segment in generated_segments
-        ]
+            if diagnostic_callback is not None:
+                diagnostic_callback(
+                    {
+                        **raw_segment,
+                        "id": getattr(segment, "id", None),
+                        "seek": getattr(segment, "seek", None),
+                        "avg_logprob": getattr(segment, "avg_logprob", None),
+                        "no_speech_prob": getattr(
+                            segment, "no_speech_prob", None
+                        ),
+                        "compression_ratio": getattr(
+                            segment, "compression_ratio", None
+                        ),
+                    }
+                )
+            raw_segments.append(raw_segment)
         return normalize_transcribed_segments(raw_segments), info
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
@@ -196,6 +216,22 @@ class WhisperTranscriber:
                 ) from exc
 
         duration = round(perf_counter() - started, 3)
+        if not segments:
+            try:
+                segments, retry_info = self._decode(
+                    model, audio_path, vad_filter=False
+                )
+            except VideoExtractionError:
+                raise
+            except Exception as exc:
+                raise VideoExtractionError(
+                    502,
+                    "whisper_transcription_failed",
+                    "Local faster-whisper transcription failed.",
+                ) from exc
+            if segments:
+                info = retry_info
+
         if not segments:
             raise VideoExtractionError(
                 502,

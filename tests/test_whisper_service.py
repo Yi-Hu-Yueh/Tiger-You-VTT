@@ -168,6 +168,103 @@ def test_detected_language_timestamps_empty_filter_and_unicode_are_preserved() -
     ]
 
 
+def test_raw_segment_diagnostic_precedes_normalization_and_does_not_split() -> None:
+    raw_segment = SimpleNamespace(
+        id=17,
+        seek=6000,
+        start=71.14,
+        end=672.7,
+        text="いいからさ、入ってるとこ見せてよ",
+        avg_logprob=-0.42,
+        no_speech_prob=0.13,
+        compression_ratio=1.37,
+    )
+    model = FakeModel(segments=[raw_segment], language="ja")
+    diagnostics: list[dict[str, object]] = []
+
+    segments, info = WhisperTranscriber._decode(
+        model, Path("audio.webm"), diagnostics.append
+    )
+
+    assert diagnostics == [
+        {
+            "start": 71.14,
+            "end": 672.7,
+            "text": "いいからさ、入ってるとこ見せてよ",
+            "id": 17,
+            "seek": 6000,
+            "avg_logprob": -0.42,
+            "no_speech_prob": 0.13,
+            "compression_ratio": 1.37,
+        }
+    ]
+    assert segments == [
+        {
+            "start": 71.14,
+            "end": 672.7,
+            "text": "いいからさ、入ってるとこ見せてよ",
+        }
+    ]
+    assert info.language == "ja"
+
+
+def test_empty_vad_result_retries_once_without_vad_and_preserves_output() -> None:
+    class VadRetryModel:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def transcribe(self, audio_path: str, **kwargs):
+            assert audio_path.endswith("audio.webm")
+            self.calls.append(kwargs)
+            if kwargs["vad_filter"]:
+                return iter([]), SimpleNamespace(language="ko")
+            return iter(
+                [SimpleNamespace(start=0.33, end=0.76, text=" はい！ ")]
+            ), SimpleNamespace(language="ja")
+
+    model = VadRetryModel()
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: model,
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(Path("audio.webm"))
+
+    assert model.calls == [
+        {"beam_size": 5, "vad_filter": True},
+        {"beam_size": 5, "vad_filter": False},
+    ]
+    assert result.language == "ja"
+    assert result.segments == [
+        {"start": 0.33, "end": 0.76, "text": "はい！"}
+    ]
+
+
+def test_empty_vad_result_and_empty_retry_remain_controlled() -> None:
+    class EmptyModel:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def transcribe(self, _audio_path: str, **kwargs):
+            self.calls.append(kwargs)
+            return iter([]), SimpleNamespace(language="ja")
+
+    model = EmptyModel()
+    transcriber = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: model,
+        compute_type_provider=lambda _device: {"int8"},
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        transcriber.transcribe(Path("audio.webm"))
+
+    assert error.value.code == "whisper_empty_transcript"
+    assert model.calls == [
+        {"beam_size": 5, "vad_filter": True},
+        {"beam_size": 5, "vad_filter": False},
+    ]
+
+
 def test_model_load_failure_is_controlled() -> None:
     def fail(*_args):
         raise OSError("private model path")
@@ -187,9 +284,14 @@ def test_model_load_failure_is_controlled() -> None:
 
 def test_transcription_failure_is_controlled() -> None:
     model = FakeModel()
-    model.transcribe = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        RuntimeError("decoder internals")
-    )
+    calls = 0
+
+    def fail(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("decoder internals")
+
+    model.transcribe = fail
     transcriber = WhisperTranscriber(
         settings("cpu"),
         model_factory=lambda *_args: model,
@@ -201,10 +303,15 @@ def test_transcription_failure_is_controlled() -> None:
 
     assert error.value.code == "whisper_transcription_failed"
     assert "decoder internals" not in error.value.message
+    assert calls == 1
 
 
 def test_empty_transcript_is_controlled() -> None:
     model = FakeModel(segments=[SimpleNamespace(start=0, end=1, text=" ")])
+    model.transcribe = lambda *_args, **_kwargs: (
+        iter(model.segments),
+        SimpleNamespace(language="zh"),
+    )
     transcriber = WhisperTranscriber(
         settings("cpu"),
         model_factory=lambda *_args: model,

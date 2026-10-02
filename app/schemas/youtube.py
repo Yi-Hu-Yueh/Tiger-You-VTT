@@ -3,6 +3,8 @@ from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from app.schemas.transcript import TranscriptSegment
+
 
 _YOUTUBE_HOSTS = {
     "youtube.com",
@@ -97,20 +99,6 @@ class YouTubeSubtitleRequest(YouTubeInfoRequest):
     def validate_selection_mode(self) -> "YouTubeSubtitleRequest":
         if (self.language is None) != (self.type is None):
             raise ValueError("language and type must either both be provided or both be omitted")
-        return self
-
-
-class TranscriptSegment(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    start: float = Field(ge=0)
-    end: float = Field(ge=0)
-    text: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_time_range(self) -> "TranscriptSegment":
-        if self.end < self.start:
-            raise ValueError("segment end must be greater than or equal to start")
         return self
 
 
