@@ -1,5 +1,6 @@
 from html import unescape
 from io import StringIO
+import math
 import re
 from typing import Any
 
@@ -146,7 +147,71 @@ def parse_vtt(vtt_content: str) -> list[dict[str, Any]]:
 
 
 def transcript_to_txt(segments: list[dict[str, Any]]) -> str:
-    return "\n".join(segment["text"] for segment in segments)
+    return ",".join(
+        segment["text"]
+        for segment in segments
+        if segment["text"].strip()
+    )
+
+
+def normalize_transcribed_segments(
+    segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate Whisper segments without YouTube rolling-caption deduplication."""
+    normalized: list[dict[str, Any]] = []
+    previous_start = -1.0
+
+    for segment in segments:
+        try:
+            start = float(segment["start"])
+            end = float(segment["end"])
+            raw_text = segment["text"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Whisper returned a malformed segment") from exc
+
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or end < start
+            or start < previous_start
+        ):
+            raise ValueError("Whisper returned an invalid segment time range")
+        if not isinstance(raw_text, str):
+            raise ValueError("Whisper returned non-text segment content")
+
+        text = _WHITESPACE.sub(" ", raw_text).strip()
+        previous_start = start
+        if not text:
+            continue
+        normalized.append(
+            {"start": round(start, 3), "end": round(end, 3), "text": text}
+        )
+
+    return normalized
+
+
+def _vtt_timestamp(seconds: float) -> str:
+    total_milliseconds = max(0, round(seconds * 1000))
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+
+def transcript_to_vtt(segments: list[dict[str, Any]]) -> str:
+    blocks = []
+    for segment in segments:
+        blocks.append(
+            "\n".join(
+                (
+                    f"{_vtt_timestamp(segment['start'])} --> "
+                    f"{_vtt_timestamp(segment['end'])}",
+                    segment["text"],
+                )
+            )
+        )
+    return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
 def _srt_timestamp(seconds: float) -> str:

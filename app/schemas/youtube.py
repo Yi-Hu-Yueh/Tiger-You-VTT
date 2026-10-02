@@ -120,12 +120,16 @@ class YouTubeSubtitleResponse(BaseModel):
     video_id: str
     title: str
     language: str
-    type: Literal["manual", "auto"]
-    selection_mode: Literal["auto", "explicit"]
+    type: Literal["manual", "auto", "transcribed"]
+    selection_mode: Literal["auto", "explicit", "fallback"]
     segment_count: int = Field(ge=0)
     duration: float | None = Field(default=None, ge=0)
     segments: list[TranscriptSegment]
     vtt: str
     txt: str
     srt: str
+    transcription_model: str | None = Field(default=None, min_length=1)
+    transcription_device: Literal["cpu", "cuda"] | None = None
+    transcription_compute_type: str | None = Field(default=None, min_length=1)
+    transcription_duration: float | None = Field(default=None, ge=0)
 

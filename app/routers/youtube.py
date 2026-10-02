@@ -26,7 +26,11 @@ async def youtube_info(request: YouTubeInfoRequest) -> YouTubeVideoInfoResponse:
     return YouTubeVideoInfoResponse.model_validate(video_info)
 
 
-@router.post("/subtitle", response_model=YouTubeSubtitleResponse)
+@router.post(
+    "/subtitle",
+    response_model=YouTubeSubtitleResponse,
+    response_model_exclude_none=True,
+)
 async def youtube_subtitle(
     request: YouTubeSubtitleRequest,
 ) -> YouTubeSubtitleResponse:

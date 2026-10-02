@@ -156,6 +156,37 @@ def test_subtitle_endpoint_url_only_activates_auto_mode(monkeypatch) -> None:
     assert response.json()["selection_mode"] == "auto"
 
 
+def test_subtitle_endpoint_accepts_transcribed_fallback_response(monkeypatch) -> None:
+    response_data = {
+        "video_id": "abc123",
+        "title": "Example video",
+        "language": "zh",
+        "type": "transcribed",
+        "selection_mode": "fallback",
+        "segment_count": 1,
+        "duration": 42.5,
+        "segments": [{"start": 0.5, "end": 2.75, "text": "你好。"}],
+        "vtt": "WEBVTT\n\n00:00:00.500 --> 00:00:02.750\n你好。\n",
+        "txt": "你好。",
+        "srt": "1\n00:00:00,500 --> 00:00:02,750\n你好。\n",
+        "transcription_model": "large-v3",
+        "transcription_device": "cpu",
+        "transcription_compute_type": "int8",
+        "transcription_duration": 10.5,
+    }
+    monkeypatch.setattr(
+        "app.routers.youtube.get_subtitle", lambda *_args: response_data
+    )
+
+    response = client.post(
+        "/api/youtube/subtitle",
+        json={"url": "https://www.youtube.com/watch?v=abc123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == response_data
+
+
 def test_subtitle_endpoint_rejects_language_without_type() -> None:
     response = client.post(
         "/api/youtube/subtitle",

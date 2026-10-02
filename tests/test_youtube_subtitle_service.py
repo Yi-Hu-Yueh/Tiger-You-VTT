@@ -12,7 +12,11 @@ from app.services.youtube import (
 )
 
 
-SAMPLE_VTT = "WEBVTT\n\n00:00:00.500 --> 00:00:02.750\nHello &amp; welcome.\n"
+SAMPLE_VTT = (
+    "WEBVTT\n\n"
+    "00:00:00.500 --> 00:00:02.750\nHello &amp; welcome.\n\n"
+    "00:00:02.750 --> 00:00:04.000\nNext segment.\n"
+)
 
 
 def raw_info(**overrides: object) -> dict[str, object]:
@@ -147,10 +151,13 @@ def test_get_subtitle_preserves_vtt_and_cleans_temporary_directory(
     assert result["selection_mode"] == "explicit"
     assert result["vtt"] == SAMPLE_VTT
     assert result["segments"] == [
-        {"start": 0.5, "end": 2.75, "text": "Hello & welcome."}
+        {"start": 0.5, "end": 2.75, "text": "Hello & welcome."},
+        {"start": 2.75, "end": 4.0, "text": "Next segment."},
     ]
-    assert result["txt"] == "Hello & welcome."
+    assert result["txt"] == "Hello & welcome.,Next segment."
+    assert "\n" not in result["txt"]
     assert result["srt"].startswith("1\n00:00:00,500 --> 00:00:02,750")
+    assert "\n\n2\n00:00:02,750 --> 00:00:04,000\nNext segment." in result["srt"]
     assert temporary_path is not None
     assert not temporary_path.exists()
 

@@ -1,10 +1,12 @@
 import pytest
 
 from app.services.transcript import (
+    normalize_transcribed_segments,
     normalize_segments,
     parse_vtt,
     transcript_to_srt,
     transcript_to_txt,
+    transcript_to_vtt,
 )
 from app.services.youtube import VideoExtractionError
 
@@ -136,7 +138,7 @@ def test_outputs_segments_in_chronological_order() -> None:
     assert [segment["start"] for segment in segments] == [1.0, 5.0]
 
 
-def test_generates_txt_without_timestamps() -> None:
+def test_generates_txt_with_ascii_comma_separator() -> None:
     txt = transcript_to_txt(
         [
             {"start": 0.0, "end": 1.0, "text": "First line"},
@@ -144,7 +146,52 @@ def test_generates_txt_without_timestamps() -> None:
         ]
     )
 
-    assert txt == "First line\nSecond line"
+    assert txt == "First line,Second line"
+    assert "\n" not in txt
+    assert not txt.startswith(",")
+    assert not txt.endswith(",")
+
+
+def test_txt_preserves_unicode_and_punctuation_while_skipping_empty_items() -> None:
+    txt = transcript_to_txt(
+        [
+            {"start": 0.0, "end": 1.0, "text": "你以为RG只是查资料加生成"},
+            {"start": 1.0, "end": 1.5, "text": "  "},
+            {"start": 1.5, "end": 2.0, "text": "其实90%的效果差距，真的。"},
+            {"start": 2.0, "end": 3.0, "text": "藏在那几行检索代码里面"},
+        ]
+    )
+
+    assert txt == (
+        "你以为RG只是查资料加生成,"
+        "其实90%的效果差距，真的。,"
+        "藏在那几行检索代码里面"
+    )
+    assert ",," not in txt
+    assert "\n" not in txt
+
+
+def test_generates_vtt_with_header_and_millisecond_timestamps() -> None:
+    vtt = transcript_to_vtt(
+        [{"start": 0.52, "end": 3661.007, "text": "你好"}]
+    )
+
+    assert vtt == "WEBVTT\n\n00:00:00.520 --> 01:01:01.007\n你好\n"
+
+
+def test_whisper_normalization_does_not_remove_repeated_speech() -> None:
+    segments = normalize_transcribed_segments(
+        [
+            {"start": 0.0, "end": 1.0, "text": " again "},
+            {"start": 1.0, "end": 2.0, "text": "again"},
+            {"start": 2.0, "end": 2.5, "text": "  "},
+        ]
+    )
+
+    assert segments == [
+        {"start": 0.0, "end": 1.0, "text": "again"},
+        {"start": 1.0, "end": 2.0, "text": "again"},
+    ]
 
 
 def test_generates_numbered_srt_with_millisecond_timestamps() -> None:

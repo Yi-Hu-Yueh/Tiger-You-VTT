@@ -354,6 +354,108 @@ def _download_selected_vtt(
         ) from exc
 
 
+def _has_usable_audio(info: Mapping[str, Any]) -> bool:
+    formats = info.get("formats")
+    return isinstance(formats, list) and any(
+        isinstance(item, Mapping)
+        and item.get("acodec") not in {None, "none"}
+        and item.get("vcodec") == "none"
+        and bool(item.get("url"))
+        for item in formats
+    )
+
+
+def _download_audio_only(url: str, directory: Path) -> Path:
+    options = {
+        **YDL_OPTIONS,
+        "skip_download": False,
+        "format": "bestaudio",
+        "outtmpl": str(directory / "audio.%(ext)s"),
+        "nopart": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.extract_info(url, download=True)
+    except DownloadError as exc:
+        raise VideoExtractionError(
+            502,
+            "audio_download_failed",
+            "yt-dlp could not download the selected audio-only stream.",
+        ) from exc
+    except Exception as exc:
+        raise VideoExtractionError(
+            502,
+            "audio_download_failed",
+            "The audio-only stream could not be downloaded.",
+        ) from exc
+
+    audio_files = [
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.casefold() not in {".part", ".ytdl"}
+    ]
+    if len(audio_files) != 1:
+        raise VideoExtractionError(
+            502,
+            "audio_download_failed",
+            "yt-dlp did not produce exactly one audio-only file.",
+        )
+    return audio_files[0]
+
+
+def _transcribe_audio(audio_path: Path) -> Any:
+    from app.services.whisper import transcribe_audio
+
+    return transcribe_audio(audio_path)
+
+
+def _fallback_transcription(
+    url: str, info: Mapping[str, Any]
+) -> dict[str, Any]:
+    from app.services.transcript import (
+        transcript_to_srt,
+        transcript_to_txt,
+        transcript_to_vtt,
+    )
+
+    if not _has_usable_audio(info):
+        raise VideoExtractionError(
+            422,
+            "no_audio_available",
+            "No usable audio-only stream is available for transcription.",
+        )
+
+    with TemporaryDirectory(prefix="tiger-you-vtt-audio-") as temporary_directory:
+        audio_path = _download_audio_only(url, Path(temporary_directory))
+        transcription = _transcribe_audio(audio_path)
+
+    segments = transcription.segments
+    duration = info.get("duration")
+    normalized_duration = (
+        float(duration)
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        else None
+    )
+    return {
+        "video_id": _required_text(info, "id", "video ID"),
+        "title": _required_text(info, "title", "title"),
+        "language": transcription.language,
+        "type": "transcribed",
+        "selection_mode": "fallback",
+        "segment_count": len(segments),
+        "duration": normalized_duration,
+        "segments": segments,
+        "vtt": transcript_to_vtt(segments),
+        "txt": transcript_to_txt(segments),
+        "srt": transcript_to_srt(segments),
+        "transcription_model": transcription.model,
+        "transcription_device": transcription.device,
+        "transcription_compute_type": transcription.compute_type,
+        "transcription_duration": transcription.duration_seconds,
+    }
+
+
 def get_subtitle(
     url: str,
     language: str | None = None,
@@ -370,7 +472,12 @@ def get_subtitle(
         )
 
     if language is None or track_type is None:
-        selected = select_subtitle_track(info)
+        try:
+            selected = select_subtitle_track(info)
+        except VideoExtractionError as exc:
+            if exc.code != "no_subtitles_available":
+                raise
+            return _fallback_transcription(url, info)
     else:
         _validate_selected_track(info, language, track_type)
         selected = SelectedSubtitleTrack(language, track_type, "explicit")
