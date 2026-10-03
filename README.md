@@ -1,7 +1,7 @@
 # Tiger-You-VTT
 
-> YouTube / 本機影片字幕擷取與語音轉字幕工具  
-> 支援 YouTube 字幕、自動字幕、內嵌文字字幕，以及無字幕影片的 `faster-whisper` 本機語音轉錄。
+> YouTube / 本機影片 / 語音檔 / Windows 系統播放聲音的字幕擷取與語音轉文字工具  
+> 支援 YouTube 字幕、自動字幕、內嵌文字字幕、`faster-whisper` 本機 ASR，以及 Windows WASAPI Loopback 即時系統音訊轉錄。
 
 chatgpt: https://chatgpt.com/share/6ac07112-ac1c-83ee-910d-5a7d1d747d79
 
@@ -9,24 +9,29 @@ codex: https://chatgpt.com/s/cx_6ac07130c7708191a9b7e540db3563c8
 
 github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-local-green)
 ![ASR](https://img.shields.io/badge/ASR-faster--whisper-orange)
+![CUDA](https://img.shields.io/badge/CUDA-GTX%201070-success)
+![Windows Audio](https://img.shields.io/badge/Windows-WASAPI%20Loopback-blue)
 
 ---
 
 ## 1. 專案簡介
 
-Tiger-You-VTT 是一個本機執行的影片字幕擷取工具。使用者可以：
+Tiger-You-VTT 是一個以 **本機處理為主** 的字幕擷取與語音轉文字工具。
 
-- 貼上 **YouTube URL**
-- 或直接 **上傳本機影片**
+目前支援四種來源：
 
-系統會自動判斷最適合的字幕來源，不需要手動選擇處理方式。
+1. **YouTube URL**
+2. **上傳影片**
+3. **上傳語音檔**
+4. **電腦播放聲音（Windows WASAPI Loopback）**
 
-### YouTube URL
+後端會自動選擇適合的處理方式；使用者不需要自己決定要用字幕軌、Whisper、GPU 或 CPU。
+
+### 1.1 YouTube URL
 
 ```text
 YouTube URL
@@ -36,40 +41,75 @@ YouTube URL
     │   → 直接取得字幕
     │
     └─ 沒有可用字幕
-        → 只下載音訊
+        → 下載 audio-only
         → faster-whisper
-        → 語音轉字幕
+        → 語音轉文字
 ```
 
-### 本機影片
+### 1.2 本機影片
 
 ```text
 上傳影片
     ↓
-檢查影片內嵌字幕軌
-    ├─ 有可用文字字幕
-    │   → 直接擷取字幕
+FFprobe 檢查媒體 streams
+    ↓
+有 Embedded Text Subtitle？
+    ├─ 有
+    │   → FFmpeg 擷取文字字幕
     │
-    └─ 沒有可用文字字幕
-        → 檢查音訊
+    └─ 沒有
+        → 檢查 audio
         → faster-whisper
-        → 語音轉字幕
 ```
 
-最終統一輸出：
+### 1.3 本機語音檔
 
-- `segments`：含時間戳的結構化字幕片段
+```text
+上傳語音檔
+    ↓
+FFprobe 驗證
+    ↓
+faster-whisper
+    ↓
+TranscriptSegment[]
+    ↓
+TXT / VTT / SRT
+```
+
+### 1.4 Windows 電腦播放聲音
+
+```text
+Chrome / Edge / VLC / PotPlayer / Spotify / 其他程式
+                    ↓
+          Windows 音訊輸出裝置
+                    ↓
+              WASAPI Loopback
+                    ↓
+            PCM Audio Chunk
+                    ↓
+             faster-whisper
+                    ↓
+             即時累積字幕
+```
+
+> 此模式擷取的是指定 Windows 輸出裝置的**混合聲音**，不是只擷取某一個 Chrome 分頁或單一應用程式。
+
+所有有限長度媒體來源最終都統一成：
+
+- `segments`：含時間戳的 `TranscriptSegment[]`
 - `VTT`
 - `SRT`
 - `TXT`
 
-TXT 片段之間使用英文半形逗號 `,`：
+TXT 片段使用英文半形逗號 `,` 串接：
 
 ```text
 句子1,句子2,句子3
 ```
 
 ![對談範例 1](./pics/001.png)
+
+![對談範例 1](./pics/002.png)
 
 ---
 
@@ -82,19 +122,23 @@ TXT 片段之間使用英文半形逗號 `,`：
 - ✅ 本機影片上傳
 - ✅ 自動擷取影片內嵌文字字幕
 - ✅ 無內嵌字幕時自動使用 `faster-whisper`
+- ✅ 本機語音檔上傳轉文字
+- ✅ Windows WASAPI Loopback 電腦播放聲音即時轉文字
 - ✅ 本機 GPU / CPU 語音辨識
 - ✅ NVIDIA GPU CUDA 加速
+- ✅ GTX 1070 + `cuda/int8_float32` 實機驗證
 - ✅ CUDA 失敗時 CPU `int8` fallback
-- ✅ Whisper `VAD` 空結果時自動重試一次 `vad_filter=False`
-- ✅ 擷取開始 / 結束時間
+- ✅ Whisper VAD 空結果時可安全重試
+- ✅ Live system-audio 靜音 chunk 不做 VAD-off hallucination retry
+- ✅ 擷取開始 / 結束時間（H:M）
 - ✅ 背景 Job
-- ✅ 即時顯示目前已取得的字幕
+- ✅ 即時顯示目前已取得字幕
 - ✅ 即時顯示執行所耗時間
 - ✅ **停止**功能
-- ✅ 停止後保留目前已取得的文字
-- ✅ 停止後仍可取得部分 TXT / VTT / SRT
+- ✅ 停止後保留目前已取得文字
+- ✅ 停止後仍可下載部分 TXT / VTT / SRT
 - ✅ FFmpeg / FFprobe 媒體檢查
-- ✅ 上傳影片與暫存音訊自動清除
+- ✅ 上傳媒體與暫存檔自動清除
 - ✅ Swagger API 文件
 - ✅ 本機 Web UI
 
@@ -120,9 +164,9 @@ LICENSE
 
 # 4. 系統需求
 
-## 基本需求
+## 4.1 基本需求
 
-建議環境：
+建議：
 
 - Windows 10 / Windows 11
 - Python **3.11+**
@@ -131,35 +175,36 @@ LICENSE
 - 至少 8 GB RAM
 - 建議 16 GB RAM 以上
 
-本專案開發與驗證環境主要使用：
+主要開發與驗證環境：
 
 ```text
 Python 3.11.3
 Windows 11
 RAM 16 GB
+GPU NVIDIA GeForce GTX 1070 8 GB
 ```
+
+> `電腦播放聲音` 模式使用 Windows WASAPI Loopback，因此此功能為 Windows 專用。
 
 ---
 
-## 4.1 FFmpeg / FFprobe
+## 4.2 FFmpeg / FFprobe
 
-本機影片上傳、媒體檢查與區間擷取會使用：
+影片、音訊、內嵌字幕與區間擷取會使用：
 
 ```text
 ffmpeg
 ffprobe
 ```
 
-安裝後確認：
+確認：
 
 ```powershell
 ffmpeg -version
 ffprobe -version
 ```
 
-只要兩個指令都可以正常顯示版本即可。
-
-FFmpeg 官方網站：
+FFmpeg：
 
 https://ffmpeg.org/
 
@@ -167,7 +212,7 @@ https://ffmpeg.org/
 
 # 5. 從 GitHub 下載
 
-GitHub Repository：
+GitHub：
 
 https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 
@@ -178,7 +223,7 @@ git clone https://github.com/Yi-Hu-Yueh/Tiger-You-VTT.git
 cd Tiger-You-VTT
 ```
 
-## 方法 B：下載 ZIP
+## 方法 B：Download ZIP
 
 GitHub 頁面：
 
@@ -199,8 +244,6 @@ Tiger-You-VTT
 
 ## 6.1 建立虛擬環境
 
-建議使用獨立 Python virtual environment：
-
 ```powershell
 python -m venv .venv
 ```
@@ -211,14 +254,14 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-如果 PowerShell 阻擋啟動腳本，可只對目前視窗暫時允許：
+若 PowerShell 阻擋：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-確認 Python：
+確認：
 
 ```powershell
 python --version
@@ -226,7 +269,7 @@ python --version
 
 ---
 
-## 6.2 安裝 Python 套件
+## 6.2 安裝套件
 
 ```powershell
 python -m pip install --upgrade pip
@@ -244,27 +287,26 @@ python -m pip install -r requirements.txt
 - PyAV
 - python-multipart
 - httpx
+- **PyAudioWPatch**（Windows WASAPI Loopback）
 
 ---
 
-# 7. 沒有 GPU：CPU 安裝與執行
+# 7. 沒有 GPU：CPU 模式
 
-**沒有 NVIDIA GPU 也可以使用。**
-
-建議設定：
+沒有 NVIDIA GPU 也可以使用。
 
 ```powershell
 $env:WHISPER_DEVICE="cpu"
 $env:WHISPER_COMPUTE_TYPE="int8"
 ```
 
-再啟動 Tiger-You-VTT：
+啟動：
 
 ```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-CPU 模式：
+CPU 路徑：
 
 ```text
 faster-whisper
@@ -272,49 +314,44 @@ faster-whisper
 → int8
 ```
 
-### CPU 優點
+### 優點
 
 - 不需要 CUDA
 - 不需要 NVIDIA GPU
-- 安裝最簡單
-- 相容性最好
+- 安裝簡單
+- 相容性高
 
-### CPU 缺點
+### 缺點
 
-- 無字幕影片需要 ASR 時速度可能很慢
-- `large-v3` 對長影片可能耗時較久
+- `large-v3` 對長音訊可能很慢
 
-> 如果影片本身已有 YouTube 字幕或內嵌文字字幕，系統會直接使用字幕，不會啟動 Whisper，因此 CPU / GPU 差異不大。
+> 如果來源本身已有可用字幕，系統直接使用字幕，不啟動 Whisper，所以 CPU/GPU 差異不大。
 
 ---
 
-# 8. 有 NVIDIA GPU：CUDA 加速
+# 8. NVIDIA GPU / CUDA 加速
 
-如果有相容的 NVIDIA GPU，可使用 CTranslate2 CUDA 加速 `faster-whisper`。
+如果有相容 NVIDIA GPU，可使用 CTranslate2 CUDA。
 
-官方 `faster-whisper` GPU 執行環境要求包含：
+`faster-whisper` GPU 執行環境通常需要相容的：
 
-- **cuBLAS for CUDA 12**
-- **cuDNN 9 for CUDA 12**
+- cuBLAS for CUDA 12
+- cuDNN 9 for CUDA 12
 
-本專案不要求一定安裝完整 CUDA Toolkit；重點是 CTranslate2 執行時能找到相容的 CUDA Runtime DLL。
+本專案不要求一定安裝完整 CUDA Toolkit；核心要求是 CTranslate2 執行時能載入相容 Runtime DLL。
 
-## 8.1 自動 GPU 模式
-
-推薦：
+## 8.1 自動模式
 
 ```powershell
 $env:WHISPER_DEVICE="auto"
 $env:WHISPER_COMPUTE_TYPE="auto"
 ```
 
-Tiger-You-VTT 會嘗試選擇可用 CUDA 模式，若 GPU 執行失敗，仍保留 CPU fallback。
+若 GPU inference 發生錯誤，仍保留 CPU fallback。
 
 ---
 
-## 8.2 GTX 1070 驗證結果
-
-本專案已實機驗證：
+## 8.2 GTX 1070 實測
 
 ```text
 GPU                  NVIDIA GeForce GTX 1070 8 GB
@@ -326,7 +363,7 @@ Working device       cuda
 Working compute      int8_float32
 ```
 
-實測 CTranslate2 回報支援：
+CTranslate2 實測可用 compute type：
 
 ```text
 float32
@@ -334,56 +371,52 @@ int8_float32
 int8
 ```
 
-GTX 1070 測試中，`int8_float32` 為最實用的設定。
+GTX 1070 上 `int8_float32` 為目前實測最合適模式。
 
-### 單一短影片實測
-
-同一個短影片的 Whisper inference：
+### 短樣本實測
 
 ```text
 CPU int8             約 121.484 秒
 GPU int8_float32     約   5.435 秒
 ```
 
-該單次樣本中 GPU inference 約快：
+該單次短樣本純 inference 約：
 
 ```text
-22.35x
+22.35x faster
 ```
 
-此數據只代表該測試樣本，不保證所有影片都有相同比例。
+> 此結果只代表該測試，不保證所有媒體都有相同倍率。
 
 ---
 
 ## 8.3 `cublas64_12.dll` 找不到
 
-若看到：
+若出現：
 
 ```text
 RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
 ```
 
-代表 GPU 已被辨識，但 CTranslate2 找不到需要的 CUDA Runtime DLL。
-
-Tiger-You-VTT 支援：
+可設定：
 
 ```text
 WHISPER_CUDA_RUNTIME_DIR
 ```
 
-例如，若相容 DLL 已存在某個資料夾：
+例如：
 
 ```powershell
 $env:WHISPER_CUDA_RUNTIME_DIR="D:\path\to\cuda-runtime-dlls"
 ```
 
-在本專案的已驗證開發環境中，所需 CUDA 12 cuBLAS DLL 位於現有 Python 環境的：
+已驗證開發環境中，相容 DLL 位於：
 
 ```text
 ...\Lib\site-packages\torch\lib
 ```
 
-其中包含：
+包含：
 
 ```text
 cublas64_12.dll
@@ -391,9 +424,7 @@ cublasLt64_12.dll
 cudart64_12.dll
 ```
 
-專案會優先使用設定的 `WHISPER_CUDA_RUNTIME_DIR`，或在適用時發現目前環境中的 `torch\lib`。
-
-> 不建議為了排錯就隨意升降 CTranslate2 / faster-whisper、重裝 NVIDIA Driver 或安裝完整 CUDA Toolkit。先確認實際錯誤與 DLL 搜尋路徑。
+專案支援 process-local DLL search path，不需要因此修改全域 Windows 設定。
 
 ---
 
@@ -403,13 +434,13 @@ cudart64_12.dll
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-成功後：
+成功：
 
 ```text
 Uvicorn running on http://127.0.0.1:8000
 ```
 
-若 8000 已被使用，可以改成：
+如果 `8000` 已被占用：
 
 ```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
@@ -425,12 +456,6 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 http://127.0.0.1:8000/
 ```
 
-如果使用 8001：
-
-```text
-http://127.0.0.1:8001/
-```
-
 Swagger：
 
 ```text
@@ -441,52 +466,44 @@ http://127.0.0.1:8000/docs
 
 # 11. UI 操作說明
 
-Tiger-You-VTT UI 提供兩種來源：
+UI 現在有四種來源：
 
 ```text
-YouTube URL
-本機影片上傳
+○ YouTube 網址
+○ 上傳影片
+○ 上傳語音檔
+○ 電腦播放聲音
 ```
-
-後端會自動決定使用現有字幕或 Whisper。
 
 ---
 
-## 11.1 YouTube URL
+## 11.1 YouTube 網址
 
-選擇 YouTube 模式後，在 URL 欄位貼入：
+貼入：
 
 ```text
 https://www.youtube.com/watch?v=xxxxxxxxxxx
 ```
 
-不需要自己選：
-
-- 人工字幕
-- 自動字幕
-- Whisper
-
-系統自動判斷：
+系統自動：
 
 ```text
 人工字幕
     ↓ 沒有
 自動字幕
     ↓ 沒有
+audio-only
+    ↓
 faster-whisper
 ```
+
+不需要自己選字幕類型或 Whisper。
 
 ---
 
 ## 11.2 上傳影片
 
-選擇影片上傳模式：
-
-```text
-Choose File
-```
-
-支援的常見副檔名包括：
+常見支援副檔名：
 
 ```text
 .mp4
@@ -500,26 +517,83 @@ Choose File
 .mpg
 ```
 
-系統自動：
+處理：
 
 ```text
-檢查 Embedded Text Subtitle
-        ↓ 有
-      直接取字幕
-
-        ↓ 沒有
-檢查 Audio
-        ↓ 有
-faster-whisper
+FFprobe
+↓
+Embedded Text Subtitle？
+├─ 有 → 直接擷取
+└─ 無 → audio → faster-whisper
 ```
 
-不需要手動指定處理模式。
+---
+
+## 11.3 上傳語音檔
+
+支援常見格式：
+
+```text
+.mp3
+.wav
+.m4a
+.aac
+.flac
+.ogg
+.opus
+.wma
+```
+
+處理：
+
+```text
+Upload
+→ FFprobe 驗證
+→ faster-whisper
+→ TXT / VTT / SRT
+```
+
+語言由 Whisper 自動偵測。
+
+---
+
+## 11.4 電腦播放聲音
+
+選擇：
+
+```text
+電腦播放聲音
+```
+
+UI 會列出 Windows WASAPI Loopback 輸出裝置，例如：
+
+```text
+喇叭 (Realtek High Definition Audio) [Loopback]
+```
+
+流程：
+
+```text
+選擇音訊輸出裝置
+→ 開始取得字幕
+→ 播放瀏覽器 / VLC / PotPlayer / Spotify 等聲音
+→ 系統每個 bounded chunk 送至 faster-whisper
+→ UI 持續顯示目前字幕
+```
+
+### 注意
+
+- 此模式不使用麥克風。
+- 擷取的是該 Windows 輸出裝置的混合聲音。
+- 同一輸出裝置上若多個程式同時發聲，可能一起被轉錄。
+- 目前不支援只抓某一個應用程式或瀏覽器分頁。
+- Live 模式不使用 H:M 開始/結束區間。
 
 ---
 
 # 12. 擷取開始 / 結束時間
 
-UI 有：
+有限長度來源（YouTube、影片、語音檔）使用：
 
 ```text
 擷取開始時間: 小時:分鐘
@@ -532,136 +606,108 @@ UI 有：
 H:M
 ```
 
-代表：
+也就是：
 
 ```text
 小時:分鐘
 ```
 
-不是：
+不是分鐘:秒。
 
-```text
-分鐘:秒
-```
-
-## 範例
+### 範例
 
 ```text
 0:3
 ```
 
-表示：
-
-```text
-0 小時 3 分鐘
-```
+= 0 小時 3 分鐘。
 
 ```text
 2:25
 ```
 
-表示：
-
-```text
-2 小時 25 分鐘
-```
+= 2 小時 25 分鐘。
 
 ---
 
-## 12.1 UI 預設值
-
-預設：
+## 12.1 UI 預設
 
 ```text
 擷取開始時間: 0:0
 擷取結束時間: 0:10
 ```
 
-因此在一般情況下：
+預設代表：
 
 ```text
-0:0 → 0:10
+影片 / 音訊開始 → 第 10 分鐘
 ```
 
-代表擷取：
+如果來源短於 10 分鐘，而且 `0:10` 仍是未修改的預設值，系統會使用實際媒體結尾，不會因此報錯。
+
+使用者若自行明確輸入超過媒體長度的值，仍會收到 range validation error。
+
+---
+
+## 12.2 清空欄位
+
+開始空白：
 
 ```text
-影片開始 → 第 10 分鐘
+從頭開始
+```
+
+結束空白：
+
+```text
+到媒體結束
+```
+
+兩者空白：
+
+```text
+擷取全部
 ```
 
 ---
 
-## 12.2 短影片
+## 12.3 電腦播放聲音模式
 
-如果影片只有 2 分鐘，而 UI 保持原始預設：
+`電腦播放聲音` 是 Live source。
 
-```text
-0:0
-0:10
-```
-
-系統會知道 `0:10` 是尚未修改的 UI 預設值，並自動使用：
+因此：
 
 ```text
-0:0 → 實際影片結束
+擷取開始時間
+擷取結束時間
 ```
 
-因此短影片不會因預設 10 分鐘而發生 `invalid_time_range`。
+會隱藏或停用。
 
-但是如果使用者**自己明確輸入**超過影片長度的時間，仍會回傳範圍錯誤。
+開始 = 從現在開始擷取。
 
----
-
-## 12.3 清空時間欄位
-
-如果手動清空：
-
-### 開始時間空白
-
-```text
-從影片最前面開始
-```
-
-### 結束時間空白
-
-```text
-一直擷取到影片結束
-```
-
-### 兩個都空白
-
-```text
-擷取完整影片
-```
+停止 = 結束此次 Live capture。
 
 ---
 
 # 13. 開始取得字幕
 
-設定來源與時間後，按：
+按：
 
 ```text
 開始取得字幕
 ```
 
-背景 Job 會啟動。
-
-UI 會持續更新：
+背景 Job 啟動後，UI 會更新：
 
 - Job 狀態
-- 已取得 segment 數量
-- 目前字幕文字
+- segment 數量
+- 目前文字
 - 執行所耗時間
 
 ---
 
 # 14. 執行所耗時間
-
-UI 顯示：
-
-```text
-執行所耗時間
-```
 
 格式：
 
@@ -678,7 +724,7 @@ HH:MM:SS
 27:00:00
 ```
 
-計時從 Job 建立開始，包括：
+計時包括：
 
 ```text
 queued
@@ -686,7 +732,7 @@ running
 stopping
 ```
 
-Job 進入以下狀態後時間會固定：
+以下狀態會停止計時：
 
 ```text
 completed
@@ -698,13 +744,13 @@ failed
 
 # 15. 停止功能
 
-Whisper 執行期間可以按：
+Whisper Job 執行時可按：
 
 ```text
 停止
 ```
 
-狀態可能變成：
+狀態：
 
 ```text
 running
@@ -712,73 +758,96 @@ running
 → stopped
 ```
 
-## 重要
-
-STOP 是 **cooperative cancellation**。
-
-也就是：
+STOP 使用 **cooperative cancellation**：
 
 > 停止會在目前安全的字幕片段完成後生效。
 
-因此不是強制瞬間殺掉 Whisper process。
+因此不是直接殺掉 Python / Whisper process。
 
-例如按下 STOP 時已有 4 段字幕：
-
-```text
-segment 1
-segment 2
-segment 3
-segment 4
-```
-
-如果第 5 段正在完成，最終可能保留：
-
-```text
-segment 1
-segment 2
-segment 3
-segment 4
-segment 5
-```
-
-然後停止。
-
-這是正常設計。
+已經完成的字幕片段會保留。
 
 ---
 
-## 15.1 停止後文字不會消失
+## 15.1 停止後不丟文字
 
-按停止後：
+停止後保留：
 
-- 已取得的 `segments` 保留
-- TXT 保留
-- VTT 保留
-- SRT 保留
-- 執行所耗時間保留
-- 不會清空目前文字
+- `segments`
+- TXT
+- VTT
+- SRT
+- 執行所耗時間
 
-因此可以提早結束長影片轉錄，仍然取得目前為止的內容。
+例如 STOP 前已有 4 個 segment，但第 5 個正在安全完成，最後保留 5 個是正常行為。
 
 ---
 
-# 16. 輸出格式
+# 16. 電腦播放聲音的 Live Chunk
+
+System Audio 預設：
+
+```text
+SYSTEM_AUDIO_CHUNK_SECONDS = 10
+```
+
+也就是概念上：
+
+```text
+錄製約 10 秒
+→ Whisper
+→ 顯示文字
+→ 下一個 chunk
+```
+
+Live 字幕延遲約由：
+
+```text
+chunk capture 時間
++
+Whisper inference 時間
+```
+
+構成。
+
+因此這不是逐字零延遲字幕。
+
+第一次使用 `large-v3` 還包含模型載入成本，第一段可能明顯較慢。
+
+---
+
+## 16.1 靜音處理
+
+System Audio 的安靜 chunk 不應被視為錯誤。
+
+明顯靜音：
+
+```text
+→ 不增加字幕
+→ Job 繼續 running
+```
+
+Live chunk 若 VAD 得不到語音：
+
+```text
+→ 接受 0 segments
+→ 不執行 file-mode 的 VAD-off retry
+```
+
+這可降低靜音時產生 hallucinated transcript 的風險。
+
+---
+
+# 17. 輸出格式
 
 ## TXT
-
-純文字輸出以英文半形逗號連接各 segment：
 
 ```text
 第一句,第二句,第三句
 ```
 
-TXT 不包含時間碼。
-
----
+不含時間碼。
 
 ## VTT
-
-例如：
 
 ```text
 WEBVTT
@@ -787,13 +856,7 @@ WEBVTT
 第一句
 ```
 
-包含原始影片時間軸。
-
----
-
 ## SRT
-
-例如：
 
 ```text
 1
@@ -801,11 +864,7 @@ WEBVTT
 第一句
 ```
 
----
-
 ## TranscriptSegment
-
-API 內部標準格式：
 
 ```json
 {
@@ -815,64 +874,48 @@ API 內部標準格式：
 }
 ```
 
+System Audio 使用的是**此次 capture session 的相對時間軸**，不是 Windows 真實時鐘時間。
+
 ---
 
-# 17. 下載結果
+# 18. 下載結果
 
-Job 完成或停止後，UI 可下載：
+Job 完成或停止後可下載：
 
 - TXT
 - VTT
 - SRT
 
-即使按了停止，只要已有完成的字幕片段，也可以下載**目前為止**的結果。
+STOP 後只要已有 completed segments，也能下載目前為止的結果。
 
 ---
 
-# 18. 有字幕與無字幕影片的差別
+# 19. 有字幕與無字幕來源
 
-## 有現成字幕
-
-例如 YouTube 本身已有人工字幕：
+## 有現成文字字幕
 
 ```text
-YouTube
-→ VTT
+字幕 track
 → parser
 → TXT / VTT / SRT
 ```
 
-這種情況：
+不啟動 Whisper，因此通常非常快。
 
-- 不啟動 Whisper
-- 不需要 GPU
-- 通常非常快
-
----
-
-## 沒有字幕
+## 無字幕但有音訊
 
 ```text
-影片
-→ 音訊
+audio
 → faster-whisper
 → TranscriptSegment[]
 → TXT / VTT / SRT
 ```
 
-這種情況才會使用：
-
-```text
-CPU
-或
-NVIDIA GPU
-```
-
-所以 **GPU 加速只會明顯影響 Whisper 路徑**。
+才會使用 CPU / GPU。
 
 ---
 
-# 19. API
+# 20. API
 
 Swagger：
 
@@ -884,20 +927,25 @@ http://127.0.0.1:8000/docs
 
 | Method | Endpoint | 用途 |
 |---|---|---|
-| GET | `/health` | Health check |
-| POST | `/api/youtube/info` | 取得 YouTube 影片 / 字幕資訊 |
-| POST | `/api/youtube/subtitle` | 同步取得 YouTube 字幕 |
+| GET | `/health` | 服務健康檢查 |
+| GET | `/` | 本機 Web UI |
+| POST | `/api/youtube/info` | 取得 YouTube metadata / subtitle tracks |
+| POST | `/api/youtube/subtitle` | 同步取得 YouTube 字幕 / Whisper fallback |
 | POST | `/api/video/subtitle` | 同步處理上傳影片 |
-| POST | `/api/jobs/youtube` | 建立 YouTube 背景 Job |
-| POST | `/api/jobs/video` | 建立影片上傳背景 Job |
-| GET | `/api/jobs/{job_id}` | 查詢 Job / partial transcript |
-| POST | `/api/jobs/{job_id}/stop` | 停止 Job |
+| POST | `/api/audio/transcript` | 同步轉錄上傳語音檔 |
+| POST | `/api/jobs/youtube` | 建立 YouTube Background Job |
+| POST | `/api/jobs/video` | 建立影片 Background Job |
+| POST | `/api/jobs/audio` | 建立語音檔 Background Job |
+| GET | `/api/system-audio/devices` | 取得 WASAPI Loopback 裝置 |
+| POST | `/api/jobs/system-audio` | 建立 Windows 系統音訊 Live Job |
+| GET | `/api/jobs/{job_id}` | Job status / partial transcript / elapsed |
+| POST | `/api/jobs/{job_id}/stop` | Cooperative STOP |
 
 ---
 
-# 20. API 範例
+# 21. API 範例
 
-## YouTube 同步 API
+## 21.1 YouTube
 
 ```bash
 curl -X POST \
@@ -910,9 +958,7 @@ curl -X POST \
   }'
 ```
 
----
-
-## 上傳影片同步 API
+## 21.2 上傳影片
 
 ```bash
 curl -X POST \
@@ -922,11 +968,36 @@ curl -X POST \
   -F "end_time=0:10"
 ```
 
+## 21.3 上傳語音檔
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8000/api/audio/transcript" \
+  -F "file=@speech.mp3" \
+  -F "start_time=0:0" \
+  -F "end_time=0:10"
+```
+
+## 21.4 系統音訊裝置
+
+```bash
+curl "http://127.0.0.1:8000/api/system-audio/devices"
+```
+
+## 21.5 開始系統音訊 Live Job
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8000/api/jobs/system-audio" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 5
+  }'
+```
+
 ---
 
-# 21. Job 狀態
-
-背景工作可能有：
+# 22. Job 狀態
 
 ```text
 queued
@@ -937,13 +1008,13 @@ completed
 failed
 ```
 
-Job 只存在目前 Server process 的記憶體內。
+Job 為 in-memory。
 
-重啟 Uvicorn 後，舊 Job 不會保留。
+重啟 Uvicorn 後舊 Job 不保留。
 
 ---
 
-# 22. Whisper 設定
+# 23. Whisper 設定
 
 常用環境變數：
 
@@ -952,22 +1023,23 @@ WHISPER_MODEL
 WHISPER_DEVICE
 WHISPER_COMPUTE_TYPE
 WHISPER_CUDA_RUNTIME_DIR
+SYSTEM_AUDIO_CHUNK_SECONDS
 ```
 
-預設模型：
+預設 Whisper：
 
 ```text
 large-v3
 ```
 
-推薦一般設定：
+推薦：
 
 ```powershell
 $env:WHISPER_DEVICE="auto"
 $env:WHISPER_COMPUTE_TYPE="auto"
 ```
 
-強制 CPU：
+CPU：
 
 ```powershell
 $env:WHISPER_DEVICE="cpu"
@@ -976,44 +1048,60 @@ $env:WHISPER_COMPUTE_TYPE="int8"
 
 ---
 
-# 23. 模型下載
+# 24. Whisper 模型下載
 
-第一次真正需要 Whisper 時，`faster-whisper` 可能需要下載：
+第一次真正需要 ASR 時，`faster-whisper` 可能下載 `large-v3`。
 
-```text
-large-v3
-```
+第一次執行可能需要：
 
-因此第一次無字幕影片處理可能需要：
+- 網路
+- 磁碟空間
+- 額外等待時間
 
-- 網路連線
-- 較長等待時間
-- 足夠的磁碟空間
+模型成功快取後，不需要每次下載。
 
-模型使用快取後，後續不需要每次重新下載。
-
-如果影片已有可用字幕，Whisper 是 lazy-load，不會因為啟動 Tiger-You-VTT 就自動載入模型。
+字幕 fast path 不會在 FastAPI startup 時預載 Whisper。
 
 ---
 
-# 24. 常見問題
+# 25. Windows WASAPI Loopback
 
-## 24.1 Port 8000 已被占用
+System Audio 使用：
 
-錯誤：
+```text
+PyAudioWPatch
+```
+
+取得 Windows WASAPI Loopback capture device。
+
+已驗證範例：
+
+```text
+喇叭 (Realtek High Definition Audio) [Loopback]
+sample rate: 48000 Hz
+channels: 2
+```
+
+此清單只應包含可用 loopback device，不包含麥克風。
+
+---
+
+# 26. 常見問題
+
+## 26.1 Port 8000 已被占用
 
 ```text
 [Errno 10048]
 only one usage of each socket address...
 ```
 
-查詢：
+查：
 
 ```powershell
 Get-NetTCPConnection -LocalPort 8000 -State Listen
 ```
 
-或改用：
+或：
 
 ```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
@@ -1021,82 +1109,85 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 
 ---
 
-## 24.2 YouTube 看得到字幕，但系統說沒有字幕
+## 26.2 YouTube 畫面有字幕，但沒有字幕軌
 
-影片上的文字可能是：
+可能是：
 
 ```text
 burned-in subtitle
 ```
 
-也就是已經直接燒進畫面，不是真正的 YouTube subtitle track。
-
-此時 Tiger-You-VTT 會：
+此時：
 
 ```text
-無可下載字幕
+無可下載 subtitle track
 → audio
 → faster-whisper
 ```
 
-目前不使用 OCR。
+目前不做 OCR。
 
 ---
 
-## 24.3 Whisper 空轉錄
+## 26.3 Whisper 空轉錄
 
-系統目前：
+檔案模式：
 
 ```text
-第一次
 vad_filter=True
-
-若自然產生 0 usable segments
-→ 自動再試一次
-vad_filter=False
+→ 自然得到 0 usable segments
+→ 再試一次 vad_filter=False
 ```
 
-如果停止操作造成 0 segment，則**不會**誤觸發這個 retry。
+如果 STOP 導致 0 segment，不進行 retry。
+
+System Audio Live chunk 則不使用此 VAD-off retry，避免靜音 hallucination。
 
 ---
 
-## 24.4 GPU 失敗
-
-若 GPU 無法完成實際 CUDA inference：
+## 26.4 GPU 失敗
 
 ```text
 CUDA
-→ failure
+→ inference failure
 → CPU int8 fallback
 ```
 
-因此 GPU 問題不應阻止基本轉錄功能。
+基本轉錄能力仍保留。
 
 ---
 
-## 24.5 為什麼 GPU 被偵測到仍失敗？
-
-「GPU 被偵測到」不代表 CTranslate2 已能載入所有 CUDA Runtime DLL。
-
-若出現：
+## 26.5 `cublas64_12.dll` 錯誤
 
 ```text
-cublas64_12.dll is not found or cannot be loaded
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
 ```
 
-請確認：
+檢查：
 
 ```text
 WHISPER_CUDA_RUNTIME_DIR
 ```
 
-是否指向含相容 CUDA 12 runtime DLL 的資料夾。
+專案可透過 process-local DLL path 使用相容 runtime，不需要直接污染全域系統設定。
 
 ---
 
-# 25. 專案目錄結構
+## 26.6 電腦播放聲音沒有字幕
 
-概念結構：
+依序確認：
+
+1. Windows 正在使用的輸出裝置是否與 UI 選取裝置相同
+2. 是否真的有聲音播放
+3. 裝置是否為 `[Loopback]`
+4. 是否切換了 Bluetooth / Speakers / Headphones
+5. Job 是否仍為 `running`
+
+System Audio 不會自動跟隨執行中途切換的 Windows output device。
+
+---
+
+# 27. 專案目錄結構
 
 ```text
 Tiger-You-VTT/
@@ -1108,18 +1199,24 @@ Tiger-You-VTT/
 │  ├─ routers/
 │  │  ├─ youtube.py
 │  │  ├─ video.py
+│  │  ├─ audio.py
+│  │  ├─ system_audio.py
 │  │  ├─ jobs.py
 │  │  └─ ui.py
 │  │
 │  ├─ schemas/
 │  │  ├─ youtube.py
 │  │  ├─ video.py
+│  │  ├─ audio.py
+│  │  ├─ system_audio.py
 │  │  ├─ transcript.py
 │  │  └─ jobs.py
 │  │
 │  ├─ services/
 │  │  ├─ youtube.py
 │  │  ├─ video.py
+│  │  ├─ audio.py
+│  │  ├─ system_audio.py
 │  │  ├─ whisper.py
 │  │  ├─ transcript.py
 │  │  ├─ media_range.py
@@ -1130,6 +1227,7 @@ Tiger-You-VTT/
 │     └─ index.html
 │
 ├─ tests/
+├─ pics/
 ├─ requirements.txt
 ├─ requirements-dev.txt
 ├─ LICENSE
@@ -1138,28 +1236,32 @@ Tiger-You-VTT/
 
 ---
 
-# 26. 執行測試
-
-安裝開發依賴：
+# 28. 執行測試
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-```
-
-執行：
-
-```powershell
 python -m pytest -q
 ```
 
-目前本機開發版本已建立完整測試，涵蓋：
+目前最新已驗證本機版本：
+
+```text
+246 passed
+0 failed
+0 skipped
+```
+
+測試涵蓋：
 
 - YouTube subtitle
 - YouTube Whisper fallback
 - Embedded subtitle
 - Uploaded video
+- Uploaded audio
+- WASAPI device enumeration
+- System Audio capture
 - FFmpeg / FFprobe
-- Whisper CPU/GPU
+- Whisper CPU / GPU
 - CUDA fallback
 - VAD retry
 - H:M range
@@ -1172,53 +1274,63 @@ python -m pytest -q
 
 ---
 
-# 27. 安全與隱私
+# 29. 安全與隱私
 
-- Whisper 推論在本機執行
+- Whisper 推論在本機
+- Windows system-audio capture 在本機
 - 不使用雲端 ASR API
-- 不使用 Qwen / OpenAI / Ollama / LangChain 作字幕分析
-- 上傳影片使用暫存路徑
-- 處理結束後清除 temporary media
+- 不使用 Qwen / OpenAI / Ollama / LangChain 做字幕分析
+- 上傳媒體使用暫存路徑
+- Live PCM chunk 處理後刪除
+- 不保存整段系統音訊錄音
 - 不使用 `shell=True`
-- 上傳檔名不直接作為任意 filesystem path
-- 使用上傳大小限制
-- YouTube URL 路徑仍需要連線到 YouTube
-- 首次下載 Whisper 模型時需要網路
+- 上傳檔名不直接作任意 filesystem path
+- 有 upload size 限制
+- YouTube 路徑仍需要連網
+- 首次取得 Whisper 模型需要網路
 
 ---
 
-# 28. 已知限制
+# 30. 已知限制
 
-1. STOP 是 cooperative cancellation，不保證瞬間停止正在運算中的單一 Whisper segment。
-2. Job 儲存在記憶體中，Server 重啟後不保留。
-3. 畫面燒錄字幕目前不做 OCR。
-4. Whisper ASR 準確率會受到語言、背景音、音量與錄音品質影響。
-5. `large-v3` 在 CPU 上可能很慢。
-6. NVIDIA GPU 加速依賴本機 CUDA runtime 相容性。
-7. GPU acceleration 並不影響已存在字幕的快速路徑。
-8. H:M 輸入只接受「小時:分鐘」，不接受秒欄位。
+1. STOP 是 cooperative cancellation，不保證瞬間中斷正在推論中的 segment。
+2. Job 儲存在記憶體，Server 重啟後不保留。
+3. Burned-in visual subtitle 不做 OCR。
+4. Whisper 準確率受語言、音量、背景音與錄音品質影響。
+5. `large-v3` CPU 模式可能很慢。
+6. NVIDIA GPU 加速依賴 CUDA runtime 相容性。
+7. GPU 不影響已有字幕的 fast path。
+8. H:M 只接受「小時:分鐘」，不接受秒欄位。
+9. System Audio 只支援 Windows WASAPI Loopback。
+10. System Audio 擷取同一輸出裝置上的混合聲音，不隔離單一應用程式。
+11. System Audio latency = chunk capture + Whisper inference。
+12. System Audio Job 執行中切換 Windows output device 不會自動跟隨。
+13. 第一個 Whisper chunk 可能因模型初次載入而明顯較慢。
 
 ---
 
-# 29. 建議操作流程
-
-最簡單的日常使用方式：
+# 31. 建議操作流程
 
 ```text
 1. 啟動 Server
 2. 開啟 http://127.0.0.1:8000/
-3. 選擇 YouTube 或上傳影片
-4. 確認擷取開始 / 結束時間
-5. 按「開始取得字幕」
-6. 觀察即時字幕與執行所耗時間
-7. 若不想繼續，按「停止」
-8. 已取得文字仍會保留
-9. 下載 TXT / VTT / SRT
+3. 選擇來源：
+   - YouTube 網址
+   - 上傳影片
+   - 上傳語音檔
+   - 電腦播放聲音
+4. 有限媒體可確認擷取開始/結束時間
+5. System Audio 選擇正確的 Loopback 輸出裝置
+6. 按「開始取得字幕」
+7. 觀察即時字幕與執行所耗時間
+8. 若需要提早停止，按「停止」
+9. 已取得字幕仍保留
+10. 下載 TXT / VTT / SRT
 ```
 
 ---
 
-# 30. MIT License
+# 32. MIT License
 
 本專案依 MIT License 發布。
 

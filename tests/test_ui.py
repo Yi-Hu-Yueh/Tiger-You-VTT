@@ -18,7 +18,21 @@ def test_root_serves_minimal_job_interface() -> None:
     assert 'id="stopButton"' in html
     assert 'id="transcriptText"' in html
     assert "/api/jobs/video" in html
+    assert "/api/jobs/audio" in html
     assert "/api/jobs/youtube" in html
+    assert 'value="audio"> 上傳語音檔' in html
+    assert 'value="system_audio"> 電腦播放聲音' in html
+    assert 'id="audioFile" type="file"' in html
+    assert 'accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,audio/*"' in html
+    assert 'const selectedFile = mode === "audio" ? audioFile : videoFile' in html
+    assert 'const endpoint = mode === "audio" ? "/api/jobs/audio" : "/api/jobs/video"' in html
+    assert 'id="systemAudioDevice"' in html
+    assert 'id="systemAudioControls" hidden' in html
+    assert 'fetch("/api/system-audio/devices")' in html
+    assert 'fetch("/api/jobs/system-audio"' in html
+    assert "rangeControls.hidden = systemAudio" in html
+    assert "startTime.disabled = systemAudio" in html
+    assert "endTime.disabled = systemAudio" in html
     assert "`/api/jobs/${activeJobId}`" in html
     assert "`/api/jobs/${activeJobId}/stop`" in html
     assert "setTimeout(pollJob, 1000)" in html

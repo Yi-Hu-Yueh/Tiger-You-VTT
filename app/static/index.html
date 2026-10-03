@@ -32,13 +32,22 @@
     <legend>來源</legend>
     <label><input type="radio" name="mode" value="youtube" checked> YouTube 網址</label>
     <label><input type="radio" name="mode" value="upload"> 上傳影片</label>
+    <label><input type="radio" name="mode" value="audio"> 上傳語音檔</label>
+    <label><input type="radio" name="mode" value="system_audio"> 電腦播放聲音</label>
     <div class="source">
       <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
       <input id="videoFile" type="file" accept="video/*" hidden>
+      <input id="audioFile" type="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,audio/*" hidden>
+      <div id="systemAudioControls" hidden>
+        <label>音訊輸出裝置:
+          <select id="systemAudioDevice"></select>
+        </label>
+        <button id="refreshSystemAudioDevices" type="button">重新整理裝置</button>
+      </div>
     </div>
   </fieldset>
 
-  <fieldset>
+  <fieldset id="rangeControls">
     <legend>擷取區間</legend>
     <div class="range">
       <label>擷取開始時間: 小時:分鐘
@@ -89,6 +98,11 @@
   const message = document.querySelector("#message");
   const youtubeUrl = document.querySelector("#youtubeUrl");
   const videoFile = document.querySelector("#videoFile");
+  const audioFile = document.querySelector("#audioFile");
+  const systemAudioControls = document.querySelector("#systemAudioControls");
+  const systemAudioDevice = document.querySelector("#systemAudioDevice");
+  const refreshSystemAudioDevices = document.querySelector("#refreshSystemAudioDevices");
+  const rangeControls = document.querySelector("#rangeControls");
   const startTime = document.querySelector("#startTime");
   const endTime = document.querySelector("#endTime");
   const downloadButtons = document.querySelectorAll("[data-format]");
@@ -97,11 +111,42 @@
     endTimeEdited = true;
   });
 
+  async function loadSystemAudioDevices() {
+    systemAudioDevice.replaceChildren();
+    const response = await fetch("/api/system-audio/devices");
+    const payload = await response.json();
+    if (!response.ok) {
+      message.textContent = payload.detail?.message || "無法取得音訊輸出裝置";
+      return;
+    }
+    payload.devices.forEach((device) => {
+      const option = document.createElement("option");
+      option.value = String(device.id);
+      option.textContent = device.name;
+      option.selected = device.is_default;
+      systemAudioDevice.append(option);
+    });
+    if (!payload.devices.length) {
+      message.textContent = "找不到可用的 WASAPI Loopback 音訊輸出裝置";
+    }
+  }
+
+  refreshSystemAudioDevices.addEventListener("click", loadSystemAudioDevices);
+
   document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     radio.addEventListener("change", () => {
-      const upload = radio.checked && radio.value === "upload";
+      if (!radio.checked) return;
+      const upload = radio.value === "upload";
+      const audio = radio.value === "audio";
+      const systemAudio = radio.value === "system_audio";
       videoFile.hidden = !upload;
-      youtubeUrl.hidden = upload;
+      audioFile.hidden = !audio;
+      systemAudioControls.hidden = !systemAudio;
+      youtubeUrl.hidden = upload || audio || systemAudio;
+      rangeControls.hidden = systemAudio;
+      startTime.disabled = systemAudio;
+      endTime.disabled = systemAudio;
+      if (systemAudio) loadSystemAudioDevices();
     });
   });
 
@@ -155,17 +200,29 @@
     segmentCount.textContent = "0";
     elapsedTime.textContent = "00:00:00";
     const endTimeIsDefault = !endTimeEdited && endTime.value === DEFAULT_END_TIME;
-    if (mode === "upload") {
-      if (!videoFile.files.length) {
-        message.textContent = "請選擇影片檔案";
+    if (mode === "system_audio") {
+      if (!systemAudioDevice.value) {
+        message.textContent = "請選擇音訊輸出裝置";
+        return;
+      }
+      response = await fetch("/api/jobs/system-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: Number(systemAudioDevice.value) })
+      });
+    } else if (mode === "upload" || mode === "audio") {
+      const selectedFile = mode === "audio" ? audioFile : videoFile;
+      if (!selectedFile.files.length) {
+        message.textContent = mode === "audio" ? "請選擇語音檔案" : "請選擇影片檔案";
         return;
       }
       const body = new FormData();
-      body.append("file", videoFile.files[0]);
+      body.append("file", selectedFile.files[0]);
       body.append("start_time", startTime.value);
       body.append("end_time", endTime.value);
       body.append("end_time_is_default", String(endTimeIsDefault));
-      response = await fetch("/api/jobs/video", { method: "POST", body });
+      const endpoint = mode === "audio" ? "/api/jobs/audio" : "/api/jobs/video";
+      response = await fetch(endpoint, { method: "POST", body });
     } else {
       response = await fetch("/api/jobs/youtube", {
         method: "POST",

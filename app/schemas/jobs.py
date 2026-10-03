@@ -9,7 +9,7 @@ from app.schemas.youtube import YouTubeInfoRequest
 JobStatus = Literal[
     "queued", "running", "stopping", "stopped", "completed", "failed"
 ]
-JobSource = Literal["youtube", "upload"]
+JobSource = Literal["youtube", "upload", "audio", "system_audio"]
 
 
 class JobStartResponse(BaseModel):

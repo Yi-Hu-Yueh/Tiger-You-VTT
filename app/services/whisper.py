@@ -290,6 +290,9 @@ class WhisperTranscriber:
         audio_path: Path,
         on_segment: Callable[[dict[str, Any]], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        *,
+        retry_without_vad: bool = True,
+        allow_empty: bool = False,
     ) -> TranscriptionResult:
         model = self._get_model()
         started = perf_counter()
@@ -336,7 +339,7 @@ class WhisperTranscriber:
             and should_stop()
         ):
             stop_observed[0] = True
-        if not segments and not stop_observed[0]:
+        if not segments and not stop_observed[0] and retry_without_vad:
             try:
                 segments, retry_info = self._decode(
                     model,
@@ -357,7 +360,7 @@ class WhisperTranscriber:
             if segments:
                 info = retry_info
 
-        if not segments and not stop_observed[0]:
+        if not segments and not stop_observed[0] and not allow_empty:
             raise VideoExtractionError(
                 502,
                 "whisper_empty_transcript",
@@ -366,7 +369,7 @@ class WhisperTranscriber:
 
         language = getattr(info, "language", None)
         if not isinstance(language, str) or not language.strip():
-            if stop_observed[0]:
+            if stop_observed[0] or (allow_empty and not segments):
                 language = "und"
             else:
                 raise VideoExtractionError(
@@ -393,5 +396,14 @@ def transcribe_audio(
     audio_path: Path,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    *,
+    retry_without_vad: bool = True,
+    allow_empty: bool = False,
 ) -> TranscriptionResult:
-    return TRANSCRIBER.transcribe(audio_path, on_segment, should_stop)
+    return TRANSCRIBER.transcribe(
+        audio_path,
+        on_segment,
+        should_stop,
+        retry_without_vad=retry_without_vad,
+        allow_empty=allow_empty,
+    )

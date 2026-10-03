@@ -15,6 +15,13 @@ class VideoUploadSettings:
     chunk_bytes: int
 
 
+@dataclass(frozen=True)
+class SystemAudioSettings:
+    chunk_seconds: float
+    frames_per_buffer: int
+    silence_peak_threshold: int = 16
+
+
 def _choice(name: str, default: str, allowed: set[str] | None = None) -> str:
     value = os.getenv(name, default).strip()
     if not value:
@@ -38,6 +45,19 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _positive_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive number") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive number")
+    return value
+
+
 WHISPER_SETTINGS = WhisperSettings(
     model=_choice("WHISPER_MODEL", "large-v3"),
     device=_choice("WHISPER_DEVICE", "auto", {"auto", "cpu", "cuda"}),
@@ -47,4 +67,12 @@ WHISPER_SETTINGS = WhisperSettings(
 VIDEO_UPLOAD_SETTINGS = VideoUploadSettings(
     max_bytes=_positive_int("VIDEO_UPLOAD_MAX_BYTES", 10 * 1024**3),
     chunk_bytes=_positive_int("VIDEO_UPLOAD_CHUNK_BYTES", 1024**2),
+)
+
+SYSTEM_AUDIO_SETTINGS = SystemAudioSettings(
+    chunk_seconds=_positive_float("SYSTEM_AUDIO_CHUNK_SECONDS", 10.0),
+    frames_per_buffer=_positive_int("SYSTEM_AUDIO_FRAMES_PER_BUFFER", 1024),
+    silence_peak_threshold=_positive_int(
+        "SYSTEM_AUDIO_SILENCE_PEAK_THRESHOLD", 16
+    ),
 )

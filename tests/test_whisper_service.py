@@ -400,6 +400,30 @@ def test_empty_vad_result_and_empty_retry_remain_controlled() -> None:
     ]
 
 
+def test_live_empty_chunk_is_allowed_without_no_vad_retry() -> None:
+    class SilentModel:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def transcribe(self, _audio_path: str, **kwargs):
+            self.calls.append(kwargs)
+            return iter([]), SimpleNamespace(language=None)
+
+    model = SilentModel()
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=lambda *_args: model,
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(
+        Path("audio.webm"), retry_without_vad=False, allow_empty=True
+    )
+
+    assert model.calls == [{"beam_size": 5, "vad_filter": True}]
+    assert result.segments == []
+    assert result.language == "und"
+    assert result.stopped is False
+
+
 def test_stop_before_first_segment_does_not_trigger_vad_retry() -> None:
     class LazyModel:
         def __init__(self) -> None:

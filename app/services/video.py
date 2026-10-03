@@ -114,6 +114,9 @@ async def store_upload(
     upload: UploadFile,
     destination: Path,
     settings: VideoUploadSettings = VIDEO_UPLOAD_SETTINGS,
+    *,
+    invalid_code: str = "invalid_video_file",
+    media_label: str = "video",
 ) -> int:
     total_bytes = 0
     try:
@@ -127,7 +130,7 @@ async def store_upload(
                     raise VideoExtractionError(
                         413,
                         "upload_too_large",
-                        "The uploaded video exceeds the configured size limit.",
+                        f"The uploaded {media_label} exceeds the configured size limit.",
                     )
                 output.write(chunk)
     except VideoExtractionError:
@@ -136,14 +139,14 @@ async def store_upload(
         raise VideoExtractionError(
             500,
             "upload_storage_failed",
-            "The uploaded video could not be stored temporarily.",
+            f"The uploaded {media_label} could not be stored temporarily.",
         ) from exc
 
     if total_bytes == 0:
         raise VideoExtractionError(
             422,
-            "invalid_video_file",
-            "The uploaded video file is empty or invalid.",
+            invalid_code,
+            f"The uploaded {media_label} file is empty or invalid.",
         )
     return total_bytes
 
@@ -203,8 +206,12 @@ def _stream_from_probe(raw_stream: Mapping[str, Any]) -> MediaStream | None:
     return MediaStream(index, codec_type, codec_name, language, is_default)
 
 
-def probe_media(
-    media_path: Path, runner: CommandRunner | None = None
+def probe_media_info(
+    media_path: Path,
+    runner: CommandRunner | None = None,
+    *,
+    invalid_code: str = "invalid_media_file",
+    invalid_message: str = "The upload is not a valid, supported media file.",
 ) -> MediaInfo:
     command_runner = runner or subprocess.run
     arguments = [
@@ -244,8 +251,8 @@ def probe_media(
     if completed.returncode != 0:
         raise VideoExtractionError(
             422,
-            "invalid_video_file",
-            "The upload is not a valid, supported video file.",
+            invalid_code,
+            invalid_message,
         )
 
     try:
@@ -271,7 +278,18 @@ def probe_media(
         if isinstance(raw_stream, Mapping)
         and (stream := _stream_from_probe(raw_stream)) is not None
     )
-    media = MediaInfo(_duration_from_probe(payload), streams)
+    return MediaInfo(_duration_from_probe(payload), streams)
+
+
+def probe_media(
+    media_path: Path, runner: CommandRunner | None = None
+) -> MediaInfo:
+    media = probe_media_info(
+        media_path,
+        runner,
+        invalid_code="invalid_video_file",
+        invalid_message="The upload is not a valid, supported video file.",
+    )
     if not media.has_video:
         raise VideoExtractionError(
             422,
