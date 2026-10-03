@@ -42,10 +42,10 @@
     <legend>擷取區間</legend>
     <div class="range">
       <label>擷取開始時間: 小時:分鐘
-        <input id="startTime" type="text" inputmode="numeric" placeholder="0:03">
+        <input id="startTime" type="text" inputmode="numeric" value="0:0">
       </label>
       <label>擷取結束時間: 小時:分鐘
-        <input id="endTime" type="text" inputmode="numeric" placeholder="0:03">
+        <input id="endTime" type="text" inputmode="numeric" value="0:10">
       </label>
     </div>
     <p class="note">擷取開始時間留空 = 從頭開始<br>擷取結束時間留空 = 到影片結束<br>兩者都留空 = 擷取全部</p>
@@ -60,6 +60,7 @@
   <div class="status">
     狀態：<strong id="statusText">尚未開始</strong>
     ／ 字幕片段：<strong id="segmentCount">0</strong>
+    ／ 執行所耗時間：<strong id="elapsedTime">00:00:00</strong>
   </div>
   <p id="message" aria-live="polite"></p>
   <textarea id="transcriptText" readonly placeholder="取得的字幕會顯示在這裡"></textarea>
@@ -73,14 +74,17 @@
 
 <script>
   const terminalStates = new Set(["completed", "stopped", "failed"]);
+  const DEFAULT_END_TIME = "0:10";
   let activeJobId = null;
   let latestJob = null;
   let pollTimer = null;
+  let endTimeEdited = false;
 
   const startButton = document.querySelector("#startButton");
   const stopButton = document.querySelector("#stopButton");
   const statusText = document.querySelector("#statusText");
   const segmentCount = document.querySelector("#segmentCount");
+  const elapsedTime = document.querySelector("#elapsedTime");
   const transcriptText = document.querySelector("#transcriptText");
   const message = document.querySelector("#message");
   const youtubeUrl = document.querySelector("#youtubeUrl");
@@ -88,6 +92,10 @@
   const startTime = document.querySelector("#startTime");
   const endTime = document.querySelector("#endTime");
   const downloadButtons = document.querySelectorAll("[data-format]");
+
+  endTime.addEventListener("input", () => {
+    endTimeEdited = true;
+  });
 
   document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     radio.addEventListener("change", () => {
@@ -97,10 +105,21 @@
     });
   });
 
+  function formatElapsedTime(seconds) {
+    const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const remainingSeconds = totalSeconds % 60;
+    return [hours, minutes, remainingSeconds]
+      .map((value) => String(value).padStart(2, "0"))
+      .join(":");
+  }
+
   function updateDisplay(job) {
     latestJob = job;
     statusText.textContent = job.status;
     segmentCount.textContent = job.segment_count;
+    elapsedTime.textContent = formatElapsedTime(job.elapsed_seconds);
     transcriptText.value = job.txt;
     const active = ["queued", "running", "stopping"].includes(job.status);
     stopButton.disabled = !active;
@@ -134,6 +153,8 @@
     message.textContent = "";
     transcriptText.value = "";
     segmentCount.textContent = "0";
+    elapsedTime.textContent = "00:00:00";
+    const endTimeIsDefault = !endTimeEdited && endTime.value === DEFAULT_END_TIME;
     if (mode === "upload") {
       if (!videoFile.files.length) {
         message.textContent = "請選擇影片檔案";
@@ -143,6 +164,7 @@
       body.append("file", videoFile.files[0]);
       body.append("start_time", startTime.value);
       body.append("end_time", endTime.value);
+      body.append("end_time_is_default", String(endTimeIsDefault));
       response = await fetch("/api/jobs/video", { method: "POST", body });
     } else {
       response = await fetch("/api/jobs/youtube", {
@@ -151,7 +173,8 @@
         body: JSON.stringify({
           url: youtubeUrl.value,
           start_time: startTime.value,
-          end_time: endTime.value
+          end_time: endTime.value,
+          end_time_is_default: endTimeIsDefault
         })
       });
     }
@@ -161,7 +184,7 @@
       return;
     }
     activeJobId = payload.job_id;
-    updateDisplay({ ...payload, segment_count: 0, txt: "" });
+    updateDisplay({ ...payload, segment_count: 0, txt: "", elapsed_seconds: 0 });
     clearTimeout(pollTimer);
     pollJob();
   });

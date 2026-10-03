@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, RLock
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from app.services.errors import VideoExtractionError
@@ -31,6 +31,7 @@ JobSource = Literal["youtube", "upload"]
 class _JobRecord:
     job_id: str
     source_type: JobSource
+    created_at: float
     status: JobStatus = "queued"
     stop_requested: Event = field(default_factory=Event)
     segments: list[dict[str, Any]] = field(default_factory=list)
@@ -39,13 +40,13 @@ class _JobRecord:
     srt: str = ""
     result: dict[str, Any] | None = None
     error: dict[str, str] | None = None
-    created_at: float = field(default_factory=monotonic)
     started_at: float | None = None
     finished_at: float | None = None
     youtube_url: str | None = None
     filename: str | None = None
     start_time: str | None = None
     end_time: str | None = None
+    end_time_is_default: bool = False
     range_start: float | None = None
     range_end: float | None = None
     media_path: Path | None = None
@@ -58,9 +59,14 @@ class JobNotFoundError(KeyError):
 
 
 class JobManager:
-    def __init__(self, max_workers: int = 1) -> None:
+    def __init__(
+        self,
+        max_workers: int = 1,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self._jobs: dict[str, _JobRecord] = {}
         self._lock = RLock()
+        self._clock = clock
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="tiger-you-vtt-job",
@@ -73,15 +79,18 @@ class JobManager:
         filename: str,
         start_time: str | None = None,
         end_time: str | None = None,
+        end_time_is_default: bool = False,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
             source_type="upload",
+            created_at=self._clock(),
             filename=filename,
             media_path=media_path,
             temporary_directory=temporary_directory,
             start_time=start_time,
             end_time=end_time,
+            end_time_is_default=end_time_is_default,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -91,13 +100,16 @@ class JobManager:
         url: str,
         start_time: str | None = None,
         end_time: str | None = None,
+        end_time_is_default: bool = False,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
             source_type="youtube",
+            created_at=self._clock(),
             youtube_url=url,
             start_time=start_time,
             end_time=end_time,
+            end_time_is_default=end_time_is_default,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -118,8 +130,11 @@ class JobManager:
     def snapshot(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             record = self._record(job_id)
-            end = record.finished_at or monotonic()
-            start = record.started_at or record.created_at
+            end = (
+                record.finished_at
+                if record.finished_at is not None
+                else self._clock()
+            )
             return {
                 "job_id": record.job_id,
                 "source_type": record.source_type,
@@ -129,7 +144,9 @@ class JobManager:
                 "vtt": record.vtt,
                 "srt": record.srt,
                 "segments": deepcopy(record.segments),
-                "elapsed_seconds": round(max(0.0, end - start), 3),
+                "elapsed_seconds": round(
+                    max(0.0, end - record.created_at), 3
+                ),
                 "range_start": record.range_start,
                 "range_end": record.range_end,
                 "result": deepcopy(record.result),
@@ -143,7 +160,7 @@ class JobManager:
             if record.status == "queued":
                 record.stop_requested.set()
                 record.status = "stopped"
-                record.finished_at = monotonic()
+                record.finished_at = self._clock()
                 record.result = self._partial_result(record)
                 cleanup = True
             elif record.status == "running":
@@ -193,12 +210,16 @@ class JobManager:
             record = self._record(job_id)
             if record.stop_requested.is_set() or record.status == "stopped":
                 record.status = "stopped"
-                record.finished_at = record.finished_at or monotonic()
+                record.finished_at = (
+                    record.finished_at
+                    if record.finished_at is not None
+                    else self._clock()
+                )
                 record.result = record.result or self._partial_result(record)
                 should_run = False
             else:
                 record.status = "running"
-                record.started_at = monotonic()
+                record.started_at = self._clock()
                 should_run = True
 
         if not should_run:
@@ -215,6 +236,7 @@ class JobManager:
                 youtube_url = record.youtube_url
                 start_time = record.start_time
                 end_time = record.end_time
+                end_time_is_default = record.end_time_is_default
 
             if source_type == "upload":
                 if (
@@ -239,6 +261,8 @@ class JobManager:
                             "end_time": end_time,
                         }
                     )
+                if end_time_is_default:
+                    upload_arguments["end_time_is_default"] = True
                 result = process_uploaded_video(
                     media_path,
                     filename,
@@ -264,6 +288,8 @@ class JobManager:
                             "end_time": end_time,
                         }
                     )
+                if end_time_is_default:
+                    youtube_arguments["end_time_is_default"] = True
                 result = get_subtitle(youtube_url, **youtube_arguments)
 
             clean_result = dict(result)
@@ -288,7 +314,7 @@ class JobManager:
                 if isinstance(result_range_end, (int, float)):
                     record.range_end = float(result_range_end)
                 record.status = "stopped" if stopped else "completed"
-                record.finished_at = monotonic()
+                record.finished_at = self._clock()
         except VideoExtractionError as exc:
             self._fail_job(job_id, exc.code, exc.message)
         except Exception:
@@ -306,7 +332,7 @@ class JobManager:
             record.status = "failed"
             record.error = {"code": code, "message": message}
             record.result = self._partial_result(record)
-            record.finished_at = monotonic()
+            record.finished_at = self._clock()
 
     def _cleanup_upload(self, job_id: str) -> None:
         with self._lock:

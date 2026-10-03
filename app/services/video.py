@@ -13,6 +13,7 @@ from app.config import VIDEO_UPLOAD_SETTINGS, VideoUploadSettings
 from app.services.errors import VideoExtractionError
 from app.services.media_range import (
     create_range_audio_clip,
+    effective_default_end_time,
     filter_segments_to_range,
     offset_clip_segment,
     offset_clip_segments,
@@ -386,12 +387,18 @@ def process_uploaded_video(
     *,
     start_time: str | None = None,
     end_time: str | None = None,
+    end_time_is_default: bool = False,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_range_resolved: Callable[[float, float], None] | None = None,
 ) -> dict[str, Any]:
     media = probe_media(media_path)
-    media_range = resolve_media_range(start_time, end_time, media.duration)
+    resolved_end_time = effective_default_end_time(
+        end_time, media.duration, end_time_is_default
+    )
+    media_range = resolve_media_range(
+        start_time, resolved_end_time, media.duration
+    )
     if on_range_resolved is not None:
         on_range_resolved(media_range.start, media_range.end)
     selected = select_embedded_subtitle(media)

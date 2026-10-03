@@ -11,6 +11,8 @@ from app.services.errors import VideoExtractionError
 
 
 _MEDIA_TIME_PATTERN = re.compile(r"^([0-9]+):([0-9]{1,2})$")
+DEFAULT_UI_END_TIME = "0:10"
+DEFAULT_UI_END_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,25 @@ def parse_media_time(value: str | None) -> float | None:
             "時間格式錯誤，請使用 小時:分鐘，例如 0:03 或 2:25",
         )
     return float(hours * 3600 + minutes * 60)
+
+
+def effective_default_end_time(
+    end_time: str | None,
+    duration: float | None,
+    end_time_is_default: bool,
+) -> str | None:
+    """Clamp only the untouched UI default to the end of short media."""
+    if not end_time_is_default:
+        return end_time
+    if (end_time or "").strip() != DEFAULT_UI_END_TIME:
+        return end_time
+    if (
+        duration is not None
+        and math.isfinite(duration)
+        and 0 < duration < DEFAULT_UI_END_SECONDS
+    ):
+        return None
+    return end_time
 
 
 def resolve_media_range(

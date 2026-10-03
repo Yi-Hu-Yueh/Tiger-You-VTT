@@ -27,6 +27,7 @@ async def create_video_job(
     file: UploadFile = File(..., description="A local video file"),
     start_time: str | None = Form(default=None),
     end_time: str | None = Form(default=None),
+    end_time_is_default: bool = Form(default=False),
 ) -> JobStartResponse:
     temporary_directory: TemporaryDirectory[str] | None = None
     try:
@@ -42,6 +43,7 @@ async def create_video_job(
             display_name,
             start_time,
             end_time,
+            end_time_is_default,
         )
         temporary_directory = None
     except VideoExtractionError as exc:
@@ -60,7 +62,10 @@ async def create_video_job(
 @router.post("/youtube", response_model=JobStartResponse, status_code=202)
 def create_youtube_job(request: YouTubeJobRequest) -> JobStartResponse:
     started = JOB_MANAGER.create_youtube_job(
-        str(request.url), request.start_time, request.end_time
+        str(request.url),
+        request.start_time,
+        request.end_time,
+        request.end_time_is_default,
     )
     return JobStartResponse.model_validate(started)
 

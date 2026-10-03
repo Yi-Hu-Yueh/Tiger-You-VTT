@@ -18,11 +18,13 @@ RANGED_VTT = (
 )
 
 
-def youtube_info(*, subtitles=True) -> dict[str, object]:
+def youtube_info(
+    *, subtitles=True, duration: float = 300.0
+) -> dict[str, object]:
     return {
         "id": "abc123",
         "title": "Range example",
-        "duration": 300.0,
+        "duration": duration,
         "subtitles": {"en": [{"ext": "vtt", "url": "signed"}]} if subtitles else {},
         "automatic_captions": {},
         "formats": [
@@ -105,6 +107,48 @@ def test_empty_youtube_subtitle_window_does_not_fall_back(monkeypatch) -> None:
     assert result["srt"] == ""
 
 
+def test_untouched_default_end_clamps_for_short_youtube_media(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.youtube._extract_raw_info",
+        lambda _url: youtube_info(duration=120.0),
+    )
+    monkeypatch.setattr(
+        "app.services.youtube._download_selected_vtt",
+        lambda *_args: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nShort\n",
+    )
+
+    result = get_subtitle(
+        "https://www.youtube.com/watch?v=abc123",
+        start_time="0:0",
+        end_time="0:10",
+        end_time_is_default=True,
+    )
+
+    assert result["range_start"] == 0.0
+    assert result["range_end"] == 120.0
+    assert result["txt"] == "Short"
+
+
+def test_explicit_out_of_range_youtube_end_remains_rejected(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.youtube._extract_raw_info",
+        lambda _url: youtube_info(duration=120.0),
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        get_subtitle(
+            "https://www.youtube.com/watch?v=abc123",
+            start_time="0:0",
+            end_time="0:10",
+        )
+
+    assert error.value.code == "invalid_time_range"
+
+
 def test_embedded_subtitle_range_uses_existing_track(monkeypatch, tmp_path) -> None:
     media = MediaInfo(
         300.0,
@@ -137,6 +181,87 @@ def test_embedded_subtitle_range_uses_existing_track(monkeypatch, tmp_path) -> N
         "Inside",
         "End overlap",
     ]
+
+
+def test_untouched_default_end_clamps_for_short_upload(
+    monkeypatch, tmp_path
+) -> None:
+    media = MediaInfo(
+        120.0,
+        (
+            MediaStream(0, "video", "h264"),
+            MediaStream(1, "audio", "aac"),
+            MediaStream(2, "subtitle", "subrip", "en", True),
+        ),
+    )
+    monkeypatch.setattr("app.services.video.probe_media", lambda _path: media)
+    monkeypatch.setattr(
+        "app.services.video.extract_embedded_vtt",
+        lambda *_args: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nShort\n",
+    )
+
+    result = process_uploaded_video(
+        tmp_path / "upload.mp4",
+        "upload.mp4",
+        tmp_path,
+        start_time="0:0",
+        end_time="0:10",
+        end_time_is_default=True,
+    )
+
+    assert result["range_start"] == 0.0
+    assert result["range_end"] == 120.0
+    assert result["txt"] == "Short"
+
+
+def test_untouched_default_end_remains_ten_minutes_for_long_upload(
+    monkeypatch, tmp_path
+) -> None:
+    media = MediaInfo(
+        1200.0,
+        (
+            MediaStream(0, "video", "h264"),
+            MediaStream(1, "subtitle", "subrip", "en", True),
+        ),
+    )
+    monkeypatch.setattr("app.services.video.probe_media", lambda _path: media)
+    monkeypatch.setattr(
+        "app.services.video.extract_embedded_vtt",
+        lambda *_args: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nLong\n",
+    )
+
+    result = process_uploaded_video(
+        tmp_path / "upload.mp4",
+        "upload.mp4",
+        tmp_path,
+        start_time="0:0",
+        end_time="0:10",
+        end_time_is_default=True,
+    )
+
+    assert result["range_start"] == 0.0
+    assert result["range_end"] == 600.0
+
+
+def test_explicit_out_of_range_upload_end_remains_rejected(
+    monkeypatch, tmp_path
+) -> None:
+    media = MediaInfo(
+        120.0,
+        (MediaStream(0, "video", "h264"), MediaStream(1, "audio", "aac")),
+    )
+    monkeypatch.setattr("app.services.video.probe_media", lambda _path: media)
+
+    with pytest.raises(VideoExtractionError) as error:
+        process_uploaded_video(
+            tmp_path / "upload.mp4",
+            "upload.mp4",
+            tmp_path,
+            start_time="0:0",
+            end_time="0:10",
+        )
+
+    assert error.value.code == "invalid_time_range"
 
 
 def test_upload_whisper_range_clips_offsets_and_cleans(monkeypatch, tmp_path) -> None:

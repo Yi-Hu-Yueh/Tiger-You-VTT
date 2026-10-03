@@ -6,6 +6,7 @@ import pytest
 from app.services.errors import VideoExtractionError
 from app.services.media_range import (
     create_range_audio_clip,
+    effective_default_end_time,
     filter_segments_to_range,
     offset_clip_segments,
     parse_media_time,
@@ -20,6 +21,8 @@ from app.services.media_range import (
         ("", None),
         ("   ", None),
         ("0:3", 180.0),
+        ("0:0", 0.0),
+        ("0:10", 600.0),
         ("0:03", 180.0),
         ("2:25", 8700.0),
         ("10:05", 36300.0),
@@ -47,6 +50,9 @@ def test_parse_media_time_rejects_invalid_values(value: str) -> None:
     ("start", "end", "duration", "expected"),
     [
         (None, None, 10800.0, (0.0, 10800.0, True)),
+        ("", "", 10800.0, (0.0, 10800.0, True)),
+        ("", "0:10", 10800.0, (0.0, 600.0, False)),
+        ("0:0", "", 10800.0, (0.0, 10800.0, False)),
         ("1:00", None, 10800.0, (3600.0, 10800.0, False)),
         (None, "2:00", 10800.0, (0.0, 7200.0, False)),
         ("1:00", "2:00", 10800.0, (3600.0, 7200.0, False)),
@@ -72,6 +78,18 @@ def test_resolve_media_range_rejects_invalid_bounds(start, end, message) -> None
         resolve_media_range(start, end, 10800.0)
     assert error.value.code == "invalid_time_range"
     assert message in error.value.message
+
+
+def test_untouched_default_end_clamps_only_for_short_media() -> None:
+    assert effective_default_end_time("0:10", 120.0, True) is None
+    assert effective_default_end_time("0:10", 600.0, True) == "0:10"
+    assert effective_default_end_time("0:10", 1200.0, True) == "0:10"
+
+
+def test_explicit_or_changed_end_time_is_never_clamped() -> None:
+    assert effective_default_end_time("0:10", 120.0, False) == "0:10"
+    assert effective_default_end_time("0:11", 120.0, True) == "0:11"
+    assert effective_default_end_time("", 120.0, True) == ""
 
 
 def test_filter_segments_clamps_overlap_and_preserves_order() -> None:

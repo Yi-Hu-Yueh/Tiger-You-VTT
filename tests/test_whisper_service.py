@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import whisper as whisper_service
 from app.config import WhisperSettings
 from app.services.whisper import WhisperTranscriber
 from app.services.youtube import VideoExtractionError
@@ -146,6 +147,139 @@ def test_auto_device_uses_supported_cuda_compute_type() -> None:
     assert calls == [("cuda", "int8_float32")]
     assert result.device == "cuda"
     assert result.compute_type == "int8_float32"
+
+
+def test_successful_cuda_model_is_cached_and_reused() -> None:
+    model = FakeModel()
+    calls: list[tuple[str, str]] = []
+
+    def factory(_model: str, device: str, compute_type: str):
+        calls.append((device, compute_type))
+        return model
+
+    transcriber = WhisperTranscriber(
+        settings(),
+        model_factory=factory,
+        cuda_counter=lambda: 1,
+        compute_type_provider=lambda device: (
+            {"int8_float32"} if device == "cuda" else {"int8"}
+        ),
+    )
+
+    first = transcriber.transcribe(Path("audio.webm"))
+    second = transcriber.transcribe(Path("audio.webm"))
+
+    assert calls == [("cuda", "int8_float32")]
+    assert model.calls == 2
+    assert first.device == second.device == "cuda"
+
+
+def test_failed_cuda_model_is_replaced_by_cached_cpu_fallback() -> None:
+    calls: list[tuple[str, str]] = []
+    cuda_model = FakeModel()
+    cuda_model.transcribe = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("CUDA runtime unavailable")
+    )
+    cpu_model = FakeModel()
+
+    def factory(_model: str, device: str, compute_type: str):
+        calls.append((device, compute_type))
+        return cuda_model if device == "cuda" else cpu_model
+
+    transcriber = WhisperTranscriber(
+        settings(),
+        model_factory=factory,
+        cuda_counter=lambda: 1,
+        compute_type_provider=lambda device: (
+            {"int8_float32"} if device == "cuda" else {"int8"}
+        ),
+    )
+
+    first = transcriber.transcribe(Path("audio.webm"))
+    second = transcriber.transcribe(Path("audio.webm"))
+
+    assert calls == [("cuda", "int8_float32"), ("cpu", "int8")]
+    assert cpu_model.calls == 2
+    assert first.device == second.device == "cpu"
+
+
+def test_explicit_cpu_never_probes_cuda() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def factory(_model: str, device: str, compute_type: str):
+        calls.append((device, compute_type))
+        return FakeModel()
+
+    result = WhisperTranscriber(
+        settings("cpu"),
+        model_factory=factory,
+        cuda_counter=lambda: pytest.fail("CUDA should not be probed"),
+        compute_type_provider=lambda _device: {"int8"},
+    ).transcribe(Path("audio.webm"))
+
+    assert calls == [("cpu", "int8")]
+    assert result.device == "cpu"
+
+
+def test_explicit_cuda_inference_failure_is_controlled_without_cpu_fallback() -> None:
+    model = FakeModel()
+    model.transcribe = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("CUDA execution failed")
+    )
+    calls: list[tuple[str, str]] = []
+
+    def factory(_model: str, device: str, compute_type: str):
+        calls.append((device, compute_type))
+        return model
+
+    transcriber = WhisperTranscriber(
+        settings("cuda", "int8_float32"),
+        model_factory=factory,
+        compute_type_provider=lambda _device: {"int8_float32"},
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        transcriber.transcribe(Path("audio.webm"))
+
+    assert error.value.code == "whisper_transcription_failed"
+    assert calls == [("cuda", "int8_float32")]
+
+
+def test_windows_cuda_runtime_uses_existing_venv_dlls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_directory = tmp_path / "torch" / "lib"
+    runtime_directory.mkdir(parents=True)
+    for dll_name in (
+        "cublas64_12.dll",
+        "cublasLt64_12.dll",
+    ):
+        (runtime_directory / dll_name).touch()
+    handle = object()
+    calls: list[str] = []
+
+    monkeypatch.setattr(whisper_service, "_CUDA_RUNTIME_DIRECTORY", None)
+    monkeypatch.setattr(whisper_service, "_CUDA_DLL_DIRECTORY_HANDLES", [])
+    monkeypatch.setattr(
+        whisper_service,
+        "_cuda_runtime_candidates",
+        lambda: [runtime_directory],
+    )
+    monkeypatch.setattr(
+        whisper_service.os,
+        "add_dll_directory",
+        lambda directory: calls.append(directory) or handle,
+    )
+    monkeypatch.setenv("PATH", "C:\\Windows\\System32")
+
+    selected = whisper_service._configure_windows_cuda_runtime()
+
+    assert selected == runtime_directory.resolve()
+    assert calls == [str(runtime_directory.resolve())]
+    assert whisper_service._CUDA_DLL_DIRECTORY_HANDLES == [handle]
+    assert whisper_service.os.environ["PATH"].split(whisper_service.os.pathsep)[
+        0
+    ] == str(runtime_directory.resolve())
 
 
 def test_detected_language_timestamps_empty_filter_and_unicode_are_preserved() -> None:

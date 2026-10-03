@@ -1,5 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.util import find_spec
+import os
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
@@ -8,6 +10,68 @@ from typing import Any
 from app.config import WHISPER_SETTINGS, WhisperSettings
 from app.services.errors import VideoExtractionError
 from app.services.transcript import normalize_transcribed_segments
+
+
+_CUDA_RUNTIME_LOCK = Lock()
+_CUDA_RUNTIME_DIRECTORY: Path | None = None
+_CUDA_DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _cuda_runtime_candidates() -> list[Path]:
+    configured = os.getenv("WHISPER_CUDA_RUNTIME_DIR", "").strip()
+    candidates = [Path(configured)] if configured else []
+
+    try:
+        torch_spec = find_spec("torch")
+    except (ImportError, ModuleNotFoundError, ValueError):
+        torch_spec = None
+    if torch_spec is not None and torch_spec.submodule_search_locations:
+        for package_directory in torch_spec.submodule_search_locations:
+            candidates.append(Path(package_directory) / "lib")
+
+    return candidates
+
+
+def _configure_windows_cuda_runtime() -> Path | None:
+    """Expose venv-local CUDA DLLs to CTranslate2 without changing Windows."""
+    global _CUDA_RUNTIME_DIRECTORY
+
+    if os.name != "nt":
+        return None
+    if _CUDA_RUNTIME_DIRECTORY is not None:
+        return _CUDA_RUNTIME_DIRECTORY
+
+    with _CUDA_RUNTIME_LOCK:
+        if _CUDA_RUNTIME_DIRECTORY is not None:
+            return _CUDA_RUNTIME_DIRECTORY
+
+        for candidate in _cuda_runtime_candidates():
+            directory = candidate.expanduser().resolve()
+            required_dlls = (
+                directory / "cublas64_12.dll",
+                directory / "cublasLt64_12.dll",
+            )
+            if not all(path.is_file() for path in required_dlls):
+                continue
+
+            existing_paths = os.environ.get("PATH", "").split(os.pathsep)
+            if os.path.normcase(str(directory)) not in {
+                os.path.normcase(path) for path in existing_paths if path
+            }:
+                os.environ["PATH"] = (
+                    str(directory)
+                    + os.pathsep
+                    + os.environ.get("PATH", "")
+                )
+            add_dll_directory = getattr(os, "add_dll_directory", None)
+            if add_dll_directory is not None:
+                _CUDA_DLL_DIRECTORY_HANDLES.append(
+                    add_dll_directory(str(directory))
+                )
+            _CUDA_RUNTIME_DIRECTORY = directory
+            return directory
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -40,6 +104,8 @@ def supported_compute_types(device: str) -> set[str]:
 
 
 def _default_model_factory(model: str, device: str, compute_type: str) -> Any:
+    if device == "cuda":
+        _configure_windows_cuda_runtime()
     from faster_whisper import WhisperModel
 
     return WhisperModel(model, device=device, compute_type=compute_type)

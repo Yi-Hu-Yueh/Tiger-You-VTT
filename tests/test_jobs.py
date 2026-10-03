@@ -6,11 +6,41 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.jobs import JobManager
+from app.services.jobs import JobManager, _JobRecord
 from app.services.transcript import transcript_to_srt, transcript_to_txt, transcript_to_vtt
 
 
 client = TestClient(app)
+
+
+class FakeClock:
+    def __init__(self, value: float = 100.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+def add_timed_record(
+    manager: JobManager,
+    clock: FakeClock,
+    status: str,
+) -> _JobRecord:
+    record = _JobRecord(
+        job_id=f"timed-{status}",
+        source_type="youtube",
+        created_at=clock(),
+        status=status,
+        youtube_url="https://www.youtube.com/watch?v=abc123",
+    )
+    if status in {"running", "stopping"}:
+        record.started_at = clock()
+    with manager._lock:
+        manager._jobs[record.job_id] = record
+    return record
 
 
 def result_for(
@@ -90,6 +120,7 @@ def test_create_upload_job_runs_to_completion_and_cleans_media(
     snapshot = wait_for_status(response.json()["job_id"], {"completed"})
     assert observed["content"] == b"video"
     assert snapshot["segment_count"] == 1
+    assert snapshot["elapsed_seconds"] >= 0
     assert snapshot["txt"] == "A"
     assert snapshot["result"]["filename"] == "lesson.mp4"
     assert not observed["directory"].exists()
@@ -111,6 +142,88 @@ def test_create_youtube_job_transitions_to_completed(manager, monkeypatch) -> No
     snapshot = wait_for_status(response.json()["job_id"], {"completed"})
     assert snapshot["source_type"] == "youtube"
     assert snapshot["txt"] == "YouTube"
+    assert snapshot["elapsed_seconds"] >= 0
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "stopping"])
+def test_active_job_elapsed_includes_queue_time_and_increases(status) -> None:
+    clock = FakeClock()
+    current = JobManager(max_workers=1, clock=clock)
+    try:
+        record = add_timed_record(current, clock, status)
+        assert current.snapshot(record.job_id)["elapsed_seconds"] == 0.0
+
+        clock.advance(7.25)
+        assert current.snapshot(record.job_id)["elapsed_seconds"] == 7.25
+    finally:
+        current.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("status", ["completed", "stopped", "failed"])
+def test_terminal_job_elapsed_freezes(status) -> None:
+    clock = FakeClock()
+    current = JobManager(max_workers=1, clock=clock)
+    try:
+        record = add_timed_record(current, clock, status)
+        clock.advance(12.5)
+        record.finished_at = clock()
+        first = current.snapshot(record.job_id)["elapsed_seconds"]
+
+        clock.advance(100.0)
+        second = current.snapshot(record.job_id)["elapsed_seconds"]
+
+        assert first == second == 12.5
+    finally:
+        current.shutdown(wait=True)
+
+
+def test_stop_does_not_reset_elapsed_or_partial_text() -> None:
+    clock = FakeClock()
+    current = JobManager(max_workers=1, clock=clock)
+    try:
+        record = add_timed_record(current, clock, "running")
+        record.segments = [{"start": 0.0, "end": 1.0, "text": "Partial"}]
+        record.txt = "Partial"
+        clock.advance(7.0)
+
+        stopping = current.stop(record.job_id)
+        assert stopping["status"] == "stopping"
+        assert stopping["elapsed_seconds"] == 7.0
+        assert stopping["txt"] == "Partial"
+
+        clock.advance(5.0)
+        assert current.snapshot(record.job_id)["elapsed_seconds"] == 12.0
+        with current._lock:
+            record.status = "stopped"
+            record.finished_at = clock()
+        clock.advance(30.0)
+        stopped = current.snapshot(record.job_id)
+        assert stopped["elapsed_seconds"] == 12.0
+        assert stopped["txt"] == "Partial"
+    finally:
+        current.shutdown(wait=True)
+
+
+def test_failed_job_freezes_elapsed_and_retains_partial_text() -> None:
+    clock = FakeClock()
+    current = JobManager(max_workers=1, clock=clock)
+    try:
+        record = add_timed_record(current, clock, "running")
+        record.segments = [{"start": 0.0, "end": 1.0, "text": "Partial"}]
+        record.txt = "Partial"
+        clock.advance(9.0)
+
+        current._fail_job(record.job_id, "failed", "Failure")
+        failed = current.snapshot(record.job_id)
+        clock.advance(30.0)
+        frozen = current.snapshot(record.job_id)
+
+        assert failed["status"] == "failed"
+        assert failed["elapsed_seconds"] == 9.0
+        assert frozen["elapsed_seconds"] == 9.0
+        assert frozen["txt"] == "Partial"
+    finally:
+        current.shutdown(wait=True)
 
 
 def test_queued_job_can_be_stopped_before_processing(manager, monkeypatch) -> None:
@@ -304,6 +417,62 @@ def test_upload_job_accepts_optional_range_fields(
     assert observed["start_time"] == form.get("start_time")
     assert observed["end_time"] == form.get("end_time")
     assert snapshot["range_start"] == 60.0
+    assert snapshot["range_end"] == 120.0
+
+
+def test_youtube_job_forwards_untouched_default_end_marker(
+    manager, monkeypatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def subtitle(_url, **kwargs):
+        observed.update(kwargs)
+        kwargs["on_range_resolved"](0.0, 120.0)
+        result = result_for([])
+        result.update({"range_start": 0.0, "range_end": 120.0})
+        return result
+
+    monkeypatch.setattr("app.services.jobs.get_subtitle", subtitle)
+    response = client.post(
+        "/api/jobs/youtube",
+        json={
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "start_time": "0:0",
+            "end_time": "0:10",
+            "end_time_is_default": True,
+        },
+    )
+
+    snapshot = wait_for_status(response.json()["job_id"], {"completed"})
+    assert observed["end_time_is_default"] is True
+    assert snapshot["range_end"] == 120.0
+
+
+def test_upload_job_forwards_untouched_default_end_marker(
+    manager, monkeypatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def process(_path, filename, _directory, **kwargs):
+        observed.update(kwargs)
+        kwargs["on_range_resolved"](0.0, 120.0)
+        result = result_for([], filename=filename)
+        result.update({"range_start": 0.0, "range_end": 120.0})
+        return result
+
+    monkeypatch.setattr("app.services.jobs.process_uploaded_video", process)
+    response = client.post(
+        "/api/jobs/video",
+        files={"file": ("short.mp4", b"video", "video/mp4")},
+        data={
+            "start_time": "0:0",
+            "end_time": "0:10",
+            "end_time_is_default": "true",
+        },
+    )
+
+    snapshot = wait_for_status(response.json()["job_id"], {"completed"})
+    assert observed["end_time_is_default"] is True
     assert snapshot["range_end"] == 120.0
 
 
