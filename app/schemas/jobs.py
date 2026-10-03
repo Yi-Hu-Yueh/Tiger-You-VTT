@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.transcript import TranscriptSegment
+from app.schemas.youtube import YouTubeInfoRequest
 
 
 JobStatus = Literal[
@@ -16,6 +17,11 @@ class JobStartResponse(BaseModel):
 
     job_id: str
     status: Literal["queued"]
+
+
+class YouTubeJobRequest(YouTubeInfoRequest):
+    start_time: str | None = None
+    end_time: str | None = None
 
 
 class JobError(BaseModel):
@@ -37,5 +43,7 @@ class JobStatusResponse(BaseModel):
     srt: str
     segments: list[TranscriptSegment]
     elapsed_seconds: float = Field(ge=0)
+    range_start: float | None = Field(default=None, ge=0)
+    range_end: float | None = Field(default=None, ge=0)
     result: dict[str, Any] | None = None
     error: JobError | None = None

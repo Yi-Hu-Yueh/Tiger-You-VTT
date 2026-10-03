@@ -153,7 +153,14 @@ def test_running_job_stops_with_partial_outputs(manager, monkeypatch) -> None:
     release_second = Event()
     second_segment = Event()
 
-    def process(_path, filename, _working_directory, on_segment, should_stop):
+    def process(
+        _path,
+        filename,
+        _working_directory,
+        on_segment,
+        should_stop,
+        **_kwargs,
+    ):
         segments = [{"start": 0.0, "end": 1.0, "text": "A"}]
         on_segment(segments[0])
         first_segment.set()
@@ -224,3 +231,117 @@ def test_unknown_job_is_controlled_404(manager) -> None:
     response = client.post("/api/jobs/missing/stop")
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "job_not_found"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"start_time": "0:1"},
+        {"end_time": "0:2"},
+        {"start_time": "0:1", "end_time": "0:2"},
+    ],
+)
+def test_youtube_job_accepts_optional_range_fields(
+    manager, monkeypatch, payload
+) -> None:
+    observed: dict[str, object] = {}
+
+    def subtitle(_url, **kwargs):
+        observed.update(kwargs)
+        kwargs["on_range_resolved"](60.0, 120.0)
+        result = result_for(
+            [{"start": 61.0, "end": 62.0, "text": "Ranged"}]
+        )
+        result.update({"range_start": 60.0, "range_end": 120.0})
+        return result
+
+    monkeypatch.setattr("app.services.jobs.get_subtitle", subtitle)
+    response = client.post(
+        "/api/jobs/youtube",
+        json={"url": "https://www.youtube.com/watch?v=abc123", **payload},
+    )
+
+    assert response.status_code == 202
+    snapshot = wait_for_status(response.json()["job_id"], {"completed"})
+    assert observed["start_time"] == payload.get("start_time")
+    assert observed["end_time"] == payload.get("end_time")
+    assert snapshot["range_start"] == 60.0
+    assert snapshot["range_end"] == 120.0
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        {"start_time": "0:1"},
+        {"end_time": "0:2"},
+        {"start_time": "0:1", "end_time": "0:2"},
+    ],
+)
+def test_upload_job_accepts_optional_range_fields(
+    manager, monkeypatch, form
+) -> None:
+    observed: dict[str, object] = {}
+
+    def process(_path, filename, _directory, **kwargs):
+        observed.update(kwargs)
+        kwargs["on_range_resolved"](60.0, 120.0)
+        result = result_for(
+            [{"start": 61.0, "end": 62.0, "text": "Ranged"}],
+            filename=filename,
+        )
+        result.update({"range_start": 60.0, "range_end": 120.0})
+        return result
+
+    monkeypatch.setattr("app.services.jobs.process_uploaded_video", process)
+    response = client.post(
+        "/api/jobs/video",
+        files={"file": ("range.mp4", b"video", "video/mp4")},
+        data=form,
+    )
+
+    assert response.status_code == 202
+    snapshot = wait_for_status(response.json()["job_id"], {"completed"})
+    assert observed["start_time"] == form.get("start_time")
+    assert observed["end_time"] == form.get("end_time")
+    assert snapshot["range_start"] == 60.0
+    assert snapshot["range_end"] == 120.0
+
+
+def test_ranged_job_stop_retains_original_timeline_outputs(
+    manager, monkeypatch
+) -> None:
+    segment_ready = Event()
+
+    def process(_path, filename, _directory, **kwargs):
+        kwargs["on_range_resolved"](60.0, 120.0)
+        segment = {"start": 61.25, "end": 62.75, "text": "Partial"}
+        kwargs["on_segment"](segment)
+        segment_ready.set()
+        while not kwargs["should_stop"]():
+            sleep(0.005)
+        result = result_for([segment], filename=filename, stopped=True)
+        result.update({"range_start": 60.0, "range_end": 120.0})
+        return result
+
+    monkeypatch.setattr("app.services.jobs.process_uploaded_video", process)
+    started = client.post(
+        "/api/jobs/video",
+        files={"file": ("range.mp4", b"video", "video/mp4")},
+        data={"start_time": "0:1", "end_time": "0:2"},
+    ).json()
+    assert segment_ready.wait(1)
+
+    running = client.get(f"/api/jobs/{started['job_id']}").json()
+    assert running["status"] == "running"
+    assert running["txt"] == "Partial"
+    assert running["range_start"] == 60.0
+    stopped_response = client.post(f"/api/jobs/{started['job_id']}/stop")
+    assert stopped_response.json()["status"] in {"stopping", "stopped"}
+    stopped = wait_for_status(started["job_id"], {"stopped"})
+
+    assert stopped["segments"] == [
+        {"start": 61.25, "end": 62.75, "text": "Partial"}
+    ]
+    assert stopped["txt"] == "Partial"
+    assert "00:01:01.250" in stopped["vtt"]
+    assert "00:01:01,250" in stopped["srt"]

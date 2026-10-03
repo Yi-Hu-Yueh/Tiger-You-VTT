@@ -14,6 +14,8 @@ class UploadVideoSubtitleResponse(BaseModel):
     selection_mode: Literal["auto", "fallback"]
     segment_count: int = Field(ge=0)
     duration: float | None = Field(default=None, ge=0)
+    range_start: float | None = Field(default=None, ge=0)
+    range_end: float | None = Field(default=None, ge=0)
     segments: list[TranscriptSegment]
     vtt: str
     txt: str

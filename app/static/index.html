@@ -11,8 +11,10 @@
     h1 { margin-top: 0; }
     fieldset { border: 1px solid #ccd3da; border-radius: 8px; margin-bottom: 1rem; }
     .source { display: grid; gap: .75rem; margin: 1rem 0; }
-    input[type="url"], input[type="file"], textarea { box-sizing: border-box; width: 100%; }
-    input[type="url"], input[type="file"] { padding: .65rem; }
+    input[type="url"], input[type="file"], input[type="text"], textarea { box-sizing: border-box; width: 100%; }
+    input[type="url"], input[type="file"], input[type="text"] { padding: .65rem; }
+    .range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+    .range label { display: grid; gap: .35rem; }
     textarea { min-height: 260px; padding: .8rem; resize: vertical; }
     button { border: 0; border-radius: 7px; padding: .7rem 1rem; cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .5; }
@@ -34,6 +36,19 @@
       <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
       <input id="videoFile" type="file" accept="video/*" hidden>
     </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>擷取區間</legend>
+    <div class="range">
+      <label>擷取開始時間: 小時:分鐘
+        <input id="startTime" type="text" inputmode="numeric" placeholder="0:03">
+      </label>
+      <label>擷取結束時間: 小時:分鐘
+        <input id="endTime" type="text" inputmode="numeric" placeholder="0:03">
+      </label>
+    </div>
+    <p class="note">擷取開始時間留空 = 從頭開始<br>擷取結束時間留空 = 到影片結束<br>兩者都留空 = 擷取全部</p>
   </fieldset>
 
   <div class="controls">
@@ -70,6 +85,8 @@
   const message = document.querySelector("#message");
   const youtubeUrl = document.querySelector("#youtubeUrl");
   const videoFile = document.querySelector("#videoFile");
+  const startTime = document.querySelector("#startTime");
+  const endTime = document.querySelector("#endTime");
   const downloadButtons = document.querySelectorAll("[data-format]");
 
   document.querySelectorAll('input[name="mode"]').forEach((radio) => {
@@ -124,12 +141,18 @@
       }
       const body = new FormData();
       body.append("file", videoFile.files[0]);
+      body.append("start_time", startTime.value);
+      body.append("end_time", endTime.value);
       response = await fetch("/api/jobs/video", { method: "POST", body });
     } else {
       response = await fetch("/api/jobs/youtube", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: youtubeUrl.value })
+        body: JSON.stringify({
+          url: youtubeUrl.value,
+          start_time: startTime.value,
+          end_time: endTime.value
+        })
       });
     }
     const payload = await response.json();

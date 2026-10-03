@@ -156,6 +156,59 @@ def test_subtitle_endpoint_url_only_activates_auto_mode(monkeypatch) -> None:
     assert response.json()["selection_mode"] == "auto"
 
 
+def test_subtitle_endpoint_forwards_optional_range(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_subtitle(_url, language, track_type, **kwargs):
+        observed.update(kwargs)
+        response = subtitle_response()
+        response.update({"range_start": 60.0, "range_end": 120.0})
+        return response
+
+    monkeypatch.setattr("app.routers.youtube.get_subtitle", fake_subtitle)
+    response = client.post(
+        "/api/youtube/subtitle",
+        json={
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "start_time": "0:1",
+            "end_time": "0:2",
+        },
+    )
+
+    assert response.status_code == 200
+    assert observed == {"start_time": "0:1", "end_time": "0:2"}
+    assert response.json()["range_start"] == 60.0
+    assert response.json()["range_end"] == 120.0
+
+
+def test_youtube_endpoint_returns_friendly_invalid_range_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.youtube._extract_raw_info",
+        lambda _url: {
+            "id": "abc123",
+            "title": "Example",
+            "duration": 300.0,
+            "subtitles": {},
+            "automatic_captions": {},
+            "formats": [],
+        },
+    )
+    response = client.post(
+        "/api/youtube/subtitle",
+        json={
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "start_time": "0:4",
+            "end_time": "0:3",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_time_range"
+    assert "晚於" in response.json()["detail"]["message"]
+
+
 def test_subtitle_endpoint_accepts_transcribed_fallback_response(monkeypatch) -> None:
     response_data = {
         "video_id": "abc123",

@@ -94,6 +94,8 @@ class YouTubeSubtitleRequest(YouTubeInfoRequest):
         default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
     )
     type: Literal["manual", "auto"] | None = None
+    start_time: str | None = None
+    end_time: str | None = None
 
     @model_validator(mode="after")
     def validate_selection_mode(self) -> "YouTubeSubtitleRequest":
@@ -112,6 +114,8 @@ class YouTubeSubtitleResponse(BaseModel):
     selection_mode: Literal["auto", "explicit", "fallback"]
     segment_count: int = Field(ge=0)
     duration: float | None = Field(default=None, ge=0)
+    range_start: float | None = Field(default=None, ge=0)
+    range_end: float | None = Field(default=None, ge=0)
     segments: list[TranscriptSegment]
     vtt: str
     txt: str

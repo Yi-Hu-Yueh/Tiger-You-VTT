@@ -8,6 +8,14 @@ import yt_dlp
 from yt_dlp.utils import DownloadError, UnsupportedError
 
 from app.services.errors import VideoExtractionError
+from app.services.media_range import (
+    ResolvedMediaRange,
+    create_range_audio_clip,
+    filter_segments_to_range,
+    offset_clip_segment,
+    offset_clip_segments,
+    resolve_media_range,
+)
 
 
 YDL_OPTIONS: dict[str, Any] = {
@@ -412,6 +420,7 @@ def _transcribe_audio(
 
 def _stopped_transcription_result(
     info: Mapping[str, Any],
+    media_range: ResolvedMediaRange,
 ) -> dict[str, Any]:
     from app.services.transcript import transcript_to_vtt
 
@@ -430,6 +439,8 @@ def _stopped_transcription_result(
         "selection_mode": "fallback",
         "segment_count": 0,
         "duration": normalized_duration,
+        "range_start": media_range.start,
+        "range_end": media_range.end,
         "segments": [],
         "vtt": transcript_to_vtt([]),
         "txt": "",
@@ -440,6 +451,7 @@ def _stopped_transcription_result(
 def _fallback_transcription(
     url: str,
     info: Mapping[str, Any],
+    media_range: ResolvedMediaRange,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
@@ -457,20 +469,46 @@ def _fallback_transcription(
         )
 
     if should_stop is not None and should_stop():
-        return _stopped_transcription_result(info)
+        return _stopped_transcription_result(info, media_range)
 
     with TemporaryDirectory(prefix="tiger-you-vtt-audio-") as temporary_directory:
         audio_path = _download_audio_only(url, Path(temporary_directory))
         if should_stop is not None and should_stop():
-            return _stopped_transcription_result(info)
+            return _stopped_transcription_result(info, media_range)
+        transcription_source = audio_path
+        ranged_on_segment = on_segment
+        if not media_range.is_full:
+            transcription_source = create_range_audio_clip(
+                audio_path,
+                Path(temporary_directory) / "range.wav",
+                media_range.start,
+                media_range.end,
+            )
+            if should_stop is not None and should_stop():
+                return _stopped_transcription_result(info, media_range)
+            if on_segment is not None:
+
+                def ranged_on_segment(segment: dict[str, Any]) -> None:
+                    translated = offset_clip_segment(
+                        segment, media_range.start, media_range.end
+                    )
+                    if translated is not None:
+                        on_segment(translated)
+
         if on_segment is None and should_stop is None:
-            transcription = _transcribe_audio(audio_path)
+            transcription = _transcribe_audio(transcription_source)
         else:
             transcription = _transcribe_audio(
-                audio_path, on_segment, should_stop
+                transcription_source, ranged_on_segment, should_stop
             )
 
-    segments = transcription.segments
+    segments = (
+        transcription.segments
+        if media_range.is_full
+        else offset_clip_segments(
+            transcription.segments, media_range.start, media_range.end
+        )
+    )
     duration = info.get("duration")
     normalized_duration = (
         float(duration)
@@ -485,6 +523,8 @@ def _fallback_transcription(
         "selection_mode": "fallback",
         "segment_count": len(segments),
         "duration": normalized_duration,
+        "range_start": media_range.start,
+        "range_end": media_range.end,
         "segments": segments,
         "vtt": transcript_to_vtt(segments),
         "txt": transcript_to_txt(segments),
@@ -504,14 +544,33 @@ def get_subtitle(
     language: str | None = None,
     track_type: Literal["manual", "auto"] | None = None,
     *,
+    start_time: str | None = None,
+    end_time: str | None = None,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_range_resolved: Callable[[float, float], None] | None = None,
 ) -> dict[str, Any]:
-    from app.services.transcript import parse_vtt, transcript_to_srt, transcript_to_txt
+    from app.services.transcript import (
+        parse_vtt,
+        transcript_to_srt,
+        transcript_to_txt,
+        transcript_to_vtt,
+    )
 
     info = _extract_raw_info(url)
+    duration = info.get("duration")
+    normalized_duration = (
+        float(duration)
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        else None
+    )
+    media_range = resolve_media_range(
+        start_time, end_time, normalized_duration
+    )
+    if on_range_resolved is not None:
+        on_range_resolved(media_range.start, media_range.end)
     if should_stop is not None and should_stop():
-        return _stopped_transcription_result(info)
+        return _stopped_transcription_result(info, media_range)
     if (language is None) != (track_type is None):
         raise VideoExtractionError(
             422,
@@ -526,9 +585,9 @@ def get_subtitle(
             if exc.code != "no_subtitles_available":
                 raise
             if on_segment is None and should_stop is None:
-                return _fallback_transcription(url, info)
+                return _fallback_transcription(url, info, media_range)
             return _fallback_transcription(
-                url, info, on_segment, should_stop
+                url, info, media_range, on_segment, should_stop
             )
     else:
         _validate_selected_track(info, language, track_type)
@@ -538,13 +597,14 @@ def get_subtitle(
         vtt_content = _download_selected_vtt(
             url, selected.language, selected.type, Path(temporary_directory)
         )
-        segments = parse_vtt(vtt_content)
+        all_segments = parse_vtt(vtt_content)
 
-    duration = info.get("duration")
-    normalized_duration = (
-        float(duration)
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-        else None
+    segments = (
+        all_segments
+        if media_range.is_full
+        else filter_segments_to_range(
+            all_segments, media_range.start, media_range.end
+        )
     )
     return {
         "video_id": _required_text(info, "id", "video ID"),
@@ -554,8 +614,14 @@ def get_subtitle(
         "selection_mode": selected.selection_mode,
         "segment_count": len(segments),
         "duration": normalized_duration,
+        "range_start": media_range.start,
+        "range_end": media_range.end,
         "segments": segments,
-        "vtt": vtt_content,
+        "vtt": (
+            vtt_content
+            if media_range.is_full
+            else transcript_to_vtt(segments)
+        ),
         "txt": transcript_to_txt(segments),
         "srt": transcript_to_srt(segments),
     }

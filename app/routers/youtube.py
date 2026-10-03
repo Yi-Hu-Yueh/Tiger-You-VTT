@@ -35,9 +35,24 @@ async def youtube_subtitle(
     request: YouTubeSubtitleRequest,
 ) -> YouTubeSubtitleResponse:
     try:
-        subtitle = await run_in_threadpool(
-            get_subtitle, str(request.url), request.language, request.type
-        )
+        if (request.start_time or "").strip() or (
+            request.end_time or ""
+        ).strip():
+            subtitle = await run_in_threadpool(
+                get_subtitle,
+                str(request.url),
+                request.language,
+                request.type,
+                start_time=request.start_time,
+                end_time=request.end_time,
+            )
+        else:
+            subtitle = await run_in_threadpool(
+                get_subtitle,
+                str(request.url),
+                request.language,
+                request.type,
+            )
     except VideoExtractionError as exc:
         raise HTTPException(
             status_code=exc.status_code,

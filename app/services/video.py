@@ -4,12 +4,20 @@ import json
 import math
 from pathlib import Path, PurePosixPath
 import subprocess
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from fastapi import UploadFile
 
 from app.config import VIDEO_UPLOAD_SETTINGS, VideoUploadSettings
 from app.services.errors import VideoExtractionError
+from app.services.media_range import (
+    create_range_audio_clip,
+    filter_segments_to_range,
+    offset_clip_segment,
+    offset_clip_segments,
+    resolve_media_range,
+)
 from app.services.transcript import (
     parse_vtt,
     transcript_to_srt,
@@ -376,10 +384,16 @@ def process_uploaded_video(
     filename: str,
     working_directory: Path,
     *,
+    start_time: str | None = None,
+    end_time: str | None = None,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_range_resolved: Callable[[float, float], None] | None = None,
 ) -> dict[str, Any]:
     media = probe_media(media_path)
+    media_range = resolve_media_range(start_time, end_time, media.duration)
+    if on_range_resolved is not None:
+        on_range_resolved(media_range.start, media_range.end)
     selected = select_embedded_subtitle(media)
 
     if selected is not None:
@@ -388,13 +402,20 @@ def process_uploaded_video(
             media_path, selected, extracted_path
         )
         try:
-            segments = parse_vtt(extracted_vtt)
+            all_segments = parse_vtt(extracted_vtt)
         except VideoExtractionError as exc:
             raise VideoExtractionError(
                 502,
                 "embedded_subtitle_extraction_failed",
                 "The extracted embedded subtitle was not valid WebVTT.",
             ) from exc
+        segments = (
+            all_segments
+            if media_range.is_full
+            else filter_segments_to_range(
+                all_segments, media_range.start, media_range.end
+            )
+        )
         language = selected.language or "und"
         return {
             "filename": filename,
@@ -403,6 +424,8 @@ def process_uploaded_video(
             "selection_mode": "auto",
             "segment_count": len(segments),
             "duration": media.duration,
+            "range_start": media_range.start,
+            "range_end": media_range.end,
             "segments": segments,
             "vtt": transcript_to_vtt(segments),
             "txt": transcript_to_txt(segments),
@@ -425,19 +448,70 @@ def process_uploaded_video(
             "selection_mode": "fallback",
             "segment_count": 0,
             "duration": media.duration,
+            "range_start": media_range.start,
+            "range_end": media_range.end,
             "segments": [],
             "vtt": transcript_to_vtt([]),
             "txt": "",
             "srt": "",
         }
 
-    if on_segment is None and should_stop is None:
-        transcription = _transcribe_local_media(media_path)
-    else:
-        transcription = _transcribe_local_media(
-            media_path, on_segment, should_stop
+    transcription_source = media_path
+    range_directory: TemporaryDirectory[str] | None = None
+    ranged_on_segment = on_segment
+    try:
+        if not media_range.is_full:
+            range_directory = TemporaryDirectory(
+                prefix="tiger-you-vtt-range-"
+            )
+            transcription_source = create_range_audio_clip(
+                media_path,
+                Path(range_directory.name) / "range.wav",
+                media_range.start,
+                media_range.end,
+            )
+            if should_stop is not None and should_stop():
+                return {
+                    "_stopped": True,
+                    "filename": filename,
+                    "language": "und",
+                    "type": "transcribed",
+                    "selection_mode": "fallback",
+                    "segment_count": 0,
+                    "duration": media.duration,
+                    "range_start": media_range.start,
+                    "range_end": media_range.end,
+                    "segments": [],
+                    "vtt": transcript_to_vtt([]),
+                    "txt": "",
+                    "srt": "",
+                }
+            if on_segment is not None:
+
+                def ranged_on_segment(segment: dict[str, Any]) -> None:
+                    translated = offset_clip_segment(
+                        segment, media_range.start, media_range.end
+                    )
+                    if translated is not None:
+                        on_segment(translated)
+
+        if on_segment is None and should_stop is None:
+            transcription = _transcribe_local_media(transcription_source)
+        else:
+            transcription = _transcribe_local_media(
+                transcription_source, ranged_on_segment, should_stop
+            )
+    finally:
+        if range_directory is not None:
+            range_directory.cleanup()
+
+    segments = (
+        transcription.segments
+        if media_range.is_full
+        else offset_clip_segments(
+            transcription.segments, media_range.start, media_range.end
         )
-    segments = transcription.segments
+    )
     result = {
         "filename": filename,
         "language": transcription.language,
@@ -445,6 +519,8 @@ def process_uploaded_video(
         "selection_mode": "fallback",
         "segment_count": len(segments),
         "duration": media.duration,
+        "range_start": media_range.start,
+        "range_end": media_range.end,
         "segments": segments,
         "vtt": transcript_to_vtt(segments),
         "txt": transcript_to_txt(segments),

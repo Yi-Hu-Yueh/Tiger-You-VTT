@@ -1,10 +1,9 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.jobs import JobStartResponse, JobStatusResponse
-from app.schemas.youtube import YouTubeInfoRequest
+from app.schemas.jobs import JobStartResponse, JobStatusResponse, YouTubeJobRequest
 from app.services.errors import VideoExtractionError
 from app.services.jobs import JOB_MANAGER, JobNotFoundError
 from app.services.video import safe_upload_name, store_upload
@@ -26,6 +25,8 @@ def _not_found() -> HTTPException:
 @router.post("/video", response_model=JobStartResponse, status_code=202)
 async def create_video_job(
     file: UploadFile = File(..., description="A local video file"),
+    start_time: str | None = Form(default=None),
+    end_time: str | None = Form(default=None),
 ) -> JobStartResponse:
     temporary_directory: TemporaryDirectory[str] | None = None
     try:
@@ -36,7 +37,11 @@ async def create_video_job(
         media_path = Path(temporary_directory.name) / f"upload{suffix}"
         await store_upload(file, media_path)
         started = JOB_MANAGER.create_video_job(
-            temporary_directory, media_path, display_name
+            temporary_directory,
+            media_path,
+            display_name,
+            start_time,
+            end_time,
         )
         temporary_directory = None
     except VideoExtractionError as exc:
@@ -53,8 +58,10 @@ async def create_video_job(
 
 
 @router.post("/youtube", response_model=JobStartResponse, status_code=202)
-def create_youtube_job(request: YouTubeInfoRequest) -> JobStartResponse:
-    started = JOB_MANAGER.create_youtube_job(str(request.url))
+def create_youtube_job(request: YouTubeJobRequest) -> JobStartResponse:
+    started = JOB_MANAGER.create_youtube_job(
+        str(request.url), request.start_time, request.end_time
+    )
     return JobStartResponse.model_validate(started)
 
 

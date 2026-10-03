@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.errors import VideoExtractionError
+from app.services.video import MediaInfo, MediaStream
 
 
 client = TestClient(app)
@@ -109,7 +110,7 @@ def test_upload_storage_failure_is_controlled(monkeypatch) -> None:
     assert response.json()["detail"]["code"] == "upload_storage_failed"
 
 
-def test_openapi_exposes_only_required_upload_file() -> None:
+def test_openapi_exposes_required_file_and_optional_range_fields() -> None:
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/api/video/subtitle"]["post"]
     content = operation["requestBody"]["content"]
@@ -117,4 +118,48 @@ def test_openapi_exposes_only_required_upload_file() -> None:
     request_schema = content["multipart/form-data"]["schema"]
     body_schema = schema["components"]["schemas"][request_schema["$ref"].split("/")[-1]]
     assert body_schema["required"] == ["file"]
-    assert set(body_schema["properties"]) == {"file"}
+    assert set(body_schema["properties"]) == {
+        "file",
+        "start_time",
+        "end_time",
+    }
+
+
+def test_upload_endpoint_forwards_optional_range(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_process(path, filename, directory, **kwargs):
+        observed.update(kwargs)
+        response = embedded_response(filename)
+        response.update({"range_start": 60.0, "range_end": 120.0})
+        return response
+
+    monkeypatch.setattr("app.routers.video.process_uploaded_video", fake_process)
+    response = client.post(
+        "/api/video/subtitle",
+        files={"file": ("lesson.mp4", b"video", "video/mp4")},
+        data={"start_time": "0:1", "end_time": "0:2"},
+    )
+
+    assert response.status_code == 200
+    assert observed == {"start_time": "0:1", "end_time": "0:2"}
+    assert response.json()["range_start"] == 60.0
+    assert response.json()["range_end"] == 120.0
+
+
+def test_upload_endpoint_returns_friendly_invalid_time_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.video.probe_media",
+        lambda _path: MediaInfo(
+            300.0, (MediaStream(0, "video", "h264"),)
+        ),
+    )
+    response = client.post(
+        "/api/video/subtitle",
+        files={"file": ("lesson.mp4", b"video", "video/mp4")},
+        data={"start_time": "分鐘"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_time_format"
+    assert "小時:分鐘" in response.json()["detail"]["message"]

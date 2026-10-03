@@ -44,6 +44,10 @@ class _JobRecord:
     finished_at: float | None = None
     youtube_url: str | None = None
     filename: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    range_start: float | None = None
+    range_end: float | None = None
     media_path: Path | None = None
     temporary_directory: TemporaryDirectory[str] | None = None
     future: Future[None] | None = None
@@ -67,6 +71,8 @@ class JobManager:
         temporary_directory: TemporaryDirectory[str],
         media_path: Path,
         filename: str,
+        start_time: str | None = None,
+        end_time: str | None = None,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
@@ -74,15 +80,24 @@ class JobManager:
             filename=filename,
             media_path=media_path,
             temporary_directory=temporary_directory,
+            start_time=start_time,
+            end_time=end_time,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
 
-    def create_youtube_job(self, url: str) -> dict[str, str]:
+    def create_youtube_job(
+        self,
+        url: str,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
             source_type="youtube",
             youtube_url=url,
+            start_time=start_time,
+            end_time=end_time,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -115,6 +130,8 @@ class JobManager:
                 "srt": record.srt,
                 "segments": deepcopy(record.segments),
                 "elapsed_seconds": round(max(0.0, end - start), 3),
+                "range_start": record.range_start,
+                "range_end": record.range_end,
                 "result": deepcopy(record.result),
                 "error": deepcopy(record.error),
             }
@@ -151,6 +168,14 @@ class JobManager:
         with self._lock:
             return self._record(job_id).stop_requested.is_set()
 
+    def _on_range_resolved(
+        self, job_id: str, range_start: float, range_end: float
+    ) -> None:
+        with self._lock:
+            record = self._record(job_id)
+            record.range_start = range_start
+            record.range_end = range_end
+
     @staticmethod
     def _partial_result(record: _JobRecord) -> dict[str, Any]:
         return {
@@ -159,6 +184,8 @@ class JobManager:
             "txt": record.txt,
             "vtt": record.vtt,
             "srt": record.srt,
+            "range_start": record.range_start,
+            "range_end": record.range_end,
         }
 
     def _run_job(self, job_id: str) -> None:
@@ -186,6 +213,8 @@ class JobManager:
                 filename = record.filename
                 temporary_directory = record.temporary_directory
                 youtube_url = record.youtube_url
+                start_time = record.start_time
+                end_time = record.end_time
 
             if source_type == "upload":
                 if (
@@ -194,25 +223,48 @@ class JobManager:
                     or temporary_directory is None
                 ):
                     raise RuntimeError("Upload job is missing its media")
+                upload_arguments = {
+                    "on_segment": lambda segment: self._on_segment(
+                        job_id, segment
+                    ),
+                    "should_stop": lambda: self._should_stop(job_id),
+                    "on_range_resolved": lambda start, end: (
+                        self._on_range_resolved(job_id, start, end)
+                    ),
+                }
+                if (start_time or "").strip() or (end_time or "").strip():
+                    upload_arguments.update(
+                        {
+                            "start_time": start_time,
+                            "end_time": end_time,
+                        }
+                    )
                 result = process_uploaded_video(
                     media_path,
                     filename,
                     Path(temporary_directory.name),
-                    on_segment=lambda segment: self._on_segment(
-                        job_id, segment
-                    ),
-                    should_stop=lambda: self._should_stop(job_id),
+                    **upload_arguments,
                 )
             else:
                 if youtube_url is None:
                     raise RuntimeError("YouTube job is missing its URL")
-                result = get_subtitle(
-                    youtube_url,
-                    on_segment=lambda segment: self._on_segment(
+                youtube_arguments = {
+                    "on_segment": lambda segment: self._on_segment(
                         job_id, segment
                     ),
-                    should_stop=lambda: self._should_stop(job_id),
-                )
+                    "should_stop": lambda: self._should_stop(job_id),
+                    "on_range_resolved": lambda start, end: (
+                        self._on_range_resolved(job_id, start, end)
+                    ),
+                }
+                if (start_time or "").strip() or (end_time or "").strip():
+                    youtube_arguments.update(
+                        {
+                            "start_time": start_time,
+                            "end_time": end_time,
+                        }
+                    )
+                result = get_subtitle(youtube_url, **youtube_arguments)
 
             clean_result = dict(result)
             stopped = bool(clean_result.pop("_stopped", False))
@@ -229,6 +281,12 @@ class JobManager:
                 )
                 record.srt = str(clean_result.get("srt", ""))
                 record.result = clean_result
+                result_range_start = clean_result.get("range_start")
+                result_range_end = clean_result.get("range_end")
+                if isinstance(result_range_start, (int, float)):
+                    record.range_start = float(result_range_start)
+                if isinstance(result_range_end, (int, float)):
+                    record.range_end = float(result_range_end)
                 record.status = "stopped" if stopped else "completed"
                 record.finished_at = monotonic()
         except VideoExtractionError as exc:
