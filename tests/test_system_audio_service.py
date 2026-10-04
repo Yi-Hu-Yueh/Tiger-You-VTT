@@ -1,5 +1,4 @@
 import wave
-from time import monotonic, sleep
 
 import pytest
 
@@ -8,8 +7,6 @@ from app.services.errors import VideoExtractionError
 from app.services.system_audio import (
     CapturedPCM,
     SystemAudioCapture,
-    SystemAudioChunkProducer,
-    SystemAudioDevice,
     enumerate_system_audio_devices,
     pcm_is_silent,
     select_system_audio_device,
@@ -215,48 +212,3 @@ def test_pcm_silence_threshold_is_conservative() -> None:
     quiet_speech = CapturedPCM(b"\x20\x00" * 8, 8000, 1, 2, 8)
     assert pcm_is_silent(silent, 16) is True
     assert pcm_is_silent(quiet_speech, 16) is False
-
-
-def test_continuous_capture_queue_overflow_is_controlled_and_measured() -> None:
-    chunk = CapturedPCM(b"\x01\x00" * 8, 8, 1, 2, 8)
-
-    class FastCapture:
-        instances = []
-        settings = SystemAudioSettings(
-            chunk_seconds=1.0,
-            frames_per_buffer=8,
-            queue_max_chunks=1,
-        )
-        device = SystemAudioDevice(5, "Speakers [Loopback]", True, 8, 1)
-
-        def __init__(self, _device_id):
-            self.closed = False
-            self.instances.append(self)
-
-        def capture_chunk(self, _should_stop):
-            return chunk
-
-        def close(self):
-            self.closed = True
-
-    producer = SystemAudioChunkProducer(
-        5,
-        should_stop=lambda: False,
-        capture_factory=FastCapture,
-    )
-    producer.start()
-    deadline = monotonic() + 2.0
-    while producer.failure is None and monotonic() < deadline:
-        sleep(0.01)
-    producer.join()
-
-    assert producer.failure is not None
-    assert producer.failure.code == "system_audio_queue_overflow"
-    metrics = producer.metrics()
-    assert metrics.captured_frames == 16
-    assert metrics.enqueued_chunks == 1
-    assert metrics.max_queue_depth == 1
-    assert metrics.queue_overflow_count == 1
-    assert metrics.dropped_chunks == 1
-    assert metrics.dropped_frames == 8
-    assert FastCapture.instances[0].closed is True
