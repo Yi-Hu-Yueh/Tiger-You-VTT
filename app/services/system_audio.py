@@ -4,6 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Any
 import wave
 
@@ -181,6 +184,53 @@ def pcm_is_silent(chunk: CapturedPCM, peak_threshold: int) -> bool:
     return max((abs(sample) for sample in samples), default=0) <= peak_threshold
 
 
+@dataclass(frozen=True)
+class CapturedSystemAudioChunk:
+    pcm: CapturedPCM
+    sequence: int
+    capture_start: float
+    capture_end: float
+    captured_at_monotonic: float
+
+
+@dataclass(frozen=True)
+class SystemAudioCaptureMetrics:
+    captured_frames: int
+    captured_seconds: float
+    enqueued_chunks: int
+    processed_chunks: int
+    queue_depth: int
+    max_queue_depth: int
+    dropped_chunks: int
+    dropped_frames: int
+    queue_overflow_count: int
+    capture_start_monotonic: float | None
+    max_processing_lag_seconds: float
+    discarded_chunks_on_stop: int
+    discarded_frames_on_stop: int
+    discarded_chunks_on_failure: int
+    discarded_frames_on_failure: int
+
+    def as_dict(self) -> dict[str, int | float | None]:
+        return {
+            "captured_frames": self.captured_frames,
+            "captured_seconds": self.captured_seconds,
+            "enqueued_chunks": self.enqueued_chunks,
+            "processed_chunks": self.processed_chunks,
+            "queue_depth": self.queue_depth,
+            "max_queue_depth": self.max_queue_depth,
+            "dropped_chunks": self.dropped_chunks,
+            "dropped_frames": self.dropped_frames,
+            "queue_overflow_count": self.queue_overflow_count,
+            "capture_start_monotonic": self.capture_start_monotonic,
+            "max_processing_lag_seconds": self.max_processing_lag_seconds,
+            "discarded_chunks_on_stop": self.discarded_chunks_on_stop,
+            "discarded_frames_on_stop": self.discarded_frames_on_stop,
+            "discarded_chunks_on_failure": self.discarded_chunks_on_failure,
+            "discarded_frames_on_failure": self.discarded_frames_on_failure,
+        }
+
+
 class SystemAudioCapture:
     def __init__(
         self,
@@ -304,3 +354,259 @@ class SystemAudioCapture:
 
     def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
         self.close()
+
+
+class SystemAudioChunkProducer:
+    """Continuously capture loopback audio into a bounded FIFO queue."""
+
+    def __init__(
+        self,
+        device_id: int,
+        *,
+        should_stop: Callable[[], bool],
+        capture_factory: Callable[[int], SystemAudioCapture] | None = None,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._device_id = device_id
+        self._external_should_stop = should_stop
+        self._capture_factory = capture_factory or SystemAudioCapture
+        self._clock = clock
+        self._stop_event = Event()
+        self._done_event = Event()
+        self._lock = Lock()
+        self._thread: Thread | None = None
+        self._capture: SystemAudioCapture | None = None
+        self._queue: Queue[CapturedSystemAudioChunk] | None = None
+        self._failure: VideoExtractionError | None = None
+        self._captured_frames = 0
+        self._sample_rate = 0
+        self._enqueued_chunks = 0
+        self._processed_chunks = 0
+        self._max_queue_depth = 0
+        self._dropped_chunks = 0
+        self._dropped_frames = 0
+        self._queue_overflow_count = 0
+        self._capture_start_monotonic: float | None = None
+        self._max_processing_lag_seconds = 0.0
+        self._discarded_chunks_on_stop = 0
+        self._discarded_frames_on_stop = 0
+        self._discarded_chunks_on_failure = 0
+        self._discarded_frames_on_failure = 0
+
+    @property
+    def device(self) -> SystemAudioDevice:
+        if self._capture is None:
+            raise RuntimeError("System-audio producer has not been started.")
+        return self._capture.device
+
+    @property
+    def settings(self) -> SystemAudioSettings:
+        if self._capture is None:
+            raise RuntimeError("System-audio producer has not been started.")
+        return self._capture.settings
+
+    @property
+    def failure(self) -> VideoExtractionError | None:
+        with self._lock:
+            return self._failure
+
+    @property
+    def done(self) -> bool:
+        return self._done_event.is_set()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("System-audio producer has already been started.")
+        capture = self._capture_factory(self._device_id)
+        self._capture = capture
+        self._sample_rate = capture.device.sample_rate
+        self._queue = Queue(maxsize=capture.settings.queue_max_chunks)
+        self._thread = Thread(
+            target=self._run,
+            name="system-audio-capture",
+            daemon=False,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def join(self) -> None:
+        thread = self._thread
+        if thread is None:
+            return
+        timeout = max(5.0, self.settings.chunk_seconds + 2.0)
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            raise VideoExtractionError(
+                503,
+                "system_audio_capture_failed",
+                "System-audio capture did not stop cleanly.",
+            )
+
+    def get_next(self, timeout: float = 0.1) -> CapturedSystemAudioChunk | None:
+        queue = self._require_queue()
+        try:
+            return queue.get(timeout=timeout)
+        except Empty:
+            return None
+
+    def mark_processing_started(self, chunk: CapturedSystemAudioChunk) -> None:
+        lag = max(0.0, self._clock() - chunk.captured_at_monotonic)
+        with self._lock:
+            self._max_processing_lag_seconds = max(
+                self._max_processing_lag_seconds,
+                lag,
+            )
+
+    def mark_processed(self) -> None:
+        with self._lock:
+            self._processed_chunks += 1
+
+    def discard_pending(self, *, stopped: bool) -> None:
+        queue = self._require_queue()
+        discarded_chunks = 0
+        discarded_frames = 0
+        while True:
+            try:
+                chunk = queue.get_nowait()
+            except Empty:
+                break
+            discarded_chunks += 1
+            discarded_frames += chunk.pcm.frame_count
+        with self._lock:
+            if stopped:
+                self._discarded_chunks_on_stop += discarded_chunks
+                self._discarded_frames_on_stop += discarded_frames
+            else:
+                self._discarded_chunks_on_failure += discarded_chunks
+                self._discarded_frames_on_failure += discarded_frames
+
+    def metrics(self) -> SystemAudioCaptureMetrics:
+        queue = self._queue
+        queue_depth = queue.qsize() if queue is not None else 0
+        with self._lock:
+            captured_seconds = (
+                self._captured_frames / self._sample_rate
+                if self._sample_rate > 0
+                else 0.0
+            )
+            return SystemAudioCaptureMetrics(
+                captured_frames=self._captured_frames,
+                captured_seconds=captured_seconds,
+                enqueued_chunks=self._enqueued_chunks,
+                processed_chunks=self._processed_chunks,
+                queue_depth=queue_depth,
+                max_queue_depth=self._max_queue_depth,
+                dropped_chunks=self._dropped_chunks,
+                dropped_frames=self._dropped_frames,
+                queue_overflow_count=self._queue_overflow_count,
+                capture_start_monotonic=self._capture_start_monotonic,
+                max_processing_lag_seconds=self._max_processing_lag_seconds,
+                discarded_chunks_on_stop=self._discarded_chunks_on_stop,
+                discarded_frames_on_stop=self._discarded_frames_on_stop,
+                discarded_chunks_on_failure=self._discarded_chunks_on_failure,
+                discarded_frames_on_failure=self._discarded_frames_on_failure,
+            )
+
+    def _run(self) -> None:
+        capture = self._capture
+        queue = self._require_queue()
+        if capture is None:
+            return
+        with self._lock:
+            self._capture_start_monotonic = self._clock()
+        sequence = 0
+        try:
+            while not self._should_stop():
+                pcm = capture.capture_chunk(self._should_stop)
+                if pcm is None:
+                    break
+                with self._lock:
+                    capture_start = self._captured_frames / pcm.sample_rate
+                    self._captured_frames += pcm.frame_count
+                    capture_end = self._captured_frames / pcm.sample_rate
+                chunk = CapturedSystemAudioChunk(
+                    pcm=pcm,
+                    sequence=sequence,
+                    capture_start=capture_start,
+                    capture_end=capture_end,
+                    captured_at_monotonic=self._clock(),
+                )
+                sequence += 1
+                full_since: float | None = None
+                enqueued = False
+                while not self._should_stop():
+                    try:
+                        queue.put(chunk, timeout=0.1)
+                        enqueued = True
+                        break
+                    except Full:
+                        if full_since is None:
+                            full_since = self._clock()
+                            with self._lock:
+                                self._queue_overflow_count += 1
+                        if self._clock() - full_since >= 1.0:
+                            with self._lock:
+                                self._dropped_chunks += 1
+                                self._dropped_frames += pcm.frame_count
+                            self._set_failure(
+                                VideoExtractionError(
+                                    503,
+                                    "system_audio_queue_overflow",
+                                    "System-audio processing could not keep up with capture.",
+                                )
+                            )
+                            self._stop_event.set()
+                            break
+                if not enqueued:
+                    if self.failure is None:
+                        with self._lock:
+                            self._discarded_chunks_on_stop += 1
+                            self._discarded_frames_on_stop += pcm.frame_count
+                    break
+                with self._lock:
+                    self._enqueued_chunks += 1
+                    self._max_queue_depth = max(
+                        self._max_queue_depth,
+                        queue.qsize(),
+                    )
+        except VideoExtractionError as exc:
+            self._set_failure(exc)
+        except Exception:
+            self._set_failure(
+                VideoExtractionError(
+                    503,
+                    "system_audio_capture_failed",
+                    "System-audio capture failed while recording.",
+                )
+            )
+        finally:
+            try:
+                close = getattr(capture, "close", None)
+                if callable(close):
+                    close()
+                else:
+                    capture.__exit__(None, None, None)
+            except Exception:
+                self._set_failure(
+                    VideoExtractionError(
+                        503,
+                        "system_audio_capture_failed",
+                        "System-audio capture cleanup failed.",
+                    )
+                )
+            self._done_event.set()
+
+    def _should_stop(self) -> bool:
+        return self._stop_event.is_set() or self._external_should_stop()
+
+    def _set_failure(self, error: VideoExtractionError) -> None:
+        with self._lock:
+            if self._failure is None:
+                self._failure = error
+
+    def _require_queue(self) -> Queue[CapturedSystemAudioChunk]:
+        if self._queue is None:
+            raise RuntimeError("System-audio producer has not been started.")
+        return self._queue

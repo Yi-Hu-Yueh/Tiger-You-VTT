@@ -22,6 +22,7 @@ from app.services.microphone import (
 )
 from app.services.system_audio import (
     SystemAudioCapture,
+    SystemAudioChunkProducer,
     pcm_is_silent,
     write_pcm_wav,
 )
@@ -448,40 +449,58 @@ class JobManager:
     def _run_system_audio_capture(
         self, job_id: str, device_id: int
     ) -> dict[str, Any]:
-        session_offset = 0.0
         language = "und"
         transcription_model: str | None = None
         transcription_device: str | None = None
         transcription_compute_type: str | None = None
         transcription_duration = 0.0
-        processed_chunks = 0
-
-        with TemporaryDirectory(
-            prefix="tiger-you-vtt-system-audio-"
-        ) as temporary_directory:
-            working_directory = Path(temporary_directory)
-            with SystemAudioCapture(device_id) as capture:
-                capture_device = capture.device.as_dict()
-                chunk_seconds = capture.settings.chunk_seconds
-                while not self._should_stop(job_id):
-                    chunk = capture.capture_chunk(
-                        lambda: self._should_stop(job_id)
-                    )
-                    if chunk is None or self._should_stop(job_id):
+        stopped = False
+        producer = SystemAudioChunkProducer(
+            device_id,
+            should_stop=lambda: self._should_stop(job_id),
+            capture_factory=SystemAudioCapture,
+        )
+        producer.start()
+        capture_device = producer.device.as_dict()
+        chunk_seconds = producer.settings.chunk_seconds
+        queue_capacity_chunks = producer.settings.queue_max_chunks
+        try:
+            with TemporaryDirectory(
+                prefix="tiger-you-vtt-system-audio-"
+            ) as temporary_directory:
+                working_directory = Path(temporary_directory)
+                while True:
+                    if self._should_stop(job_id):
+                        stopped = True
                         break
-                    chunk_end = session_offset + chunk.duration_seconds
-                    if pcm_is_silent(
-                        chunk, capture.settings.silence_peak_threshold
-                    ):
-                        processed_chunks += 1
-                        session_offset = chunk_end
+                    captured = producer.get_next()
+                    if captured is None:
+                        if producer.done:
+                            failure = producer.failure
+                            if failure is not None:
+                                raise failure
+                            break
                         continue
-                    chunk_path = working_directory / "current-chunk.wav"
+                    producer.mark_processing_started(captured)
+                    chunk = captured.pcm
+                    if pcm_is_silent(
+                        chunk, producer.settings.silence_peak_threshold
+                    ):
+                        producer.mark_processed()
+                        continue
+                    chunk_path = (
+                        working_directory
+                        / f"system-audio-chunk-{captured.sequence}.wav"
+                    )
                     write_pcm_wav(chunk, chunk_path)
 
-                    def on_chunk_segment(segment: dict[str, Any]) -> None:
+                    def on_chunk_segment(
+                        segment: dict[str, Any],
+                        capture_start: float = captured.capture_start,
+                        capture_end: float = captured.capture_end,
+                    ) -> None:
                         translated = offset_clip_segment(
-                            segment, session_offset, chunk_end
+                            segment, capture_start, capture_end
                         )
                         if translated is not None:
                             self._on_system_audio_segment(job_id, translated)
@@ -504,8 +523,7 @@ class JobManager:
                                 "A temporary system-audio chunk could not be removed.",
                             ) from exc
 
-                    processed_chunks += 1
-                    session_offset = chunk_end
+                    producer.mark_processed()
                     if language == "und" and transcription.language != "und":
                         language = transcription.language
                     transcription_model = transcription.model
@@ -513,7 +531,23 @@ class JobManager:
                     transcription_compute_type = transcription.compute_type
                     transcription_duration += transcription.duration_seconds
                     if transcription.stopped or self._should_stop(job_id):
+                        stopped = True
                         break
+        finally:
+            producer.stop()
+            producer.join()
+            producer.discard_pending(
+                stopped=stopped or self._should_stop(job_id)
+            )
+            capture_metrics = producer.metrics()
+            logger.info(
+                "System-audio capture metrics for job %s: %s",
+                job_id,
+                capture_metrics.as_dict(),
+            )
+            failure = producer.failure
+            if failure is not None:
+                raise failure
 
         with self._lock:
             record = self._record(job_id)
@@ -527,17 +561,18 @@ class JobManager:
             "type": "transcribed",
             "selection_mode": "direct",
             "segment_count": len(segments),
-            "duration": round(session_offset, 3),
+            "duration": round(capture_metrics.captured_seconds, 3),
             "range_start": 0.0,
-            "range_end": round(session_offset, 3),
+            "range_end": round(capture_metrics.captured_seconds, 3),
             "segments": segments,
             "vtt": vtt,
             "txt": txt,
             "srt": srt,
             "capture_device": capture_device,
             "capture_chunk_seconds": chunk_seconds,
-            "processed_chunks": processed_chunks,
+            "capture_queue_capacity_chunks": queue_capacity_chunks,
             "transcription_duration": round(transcription_duration, 3),
+            **capture_metrics.as_dict(),
         }
         if transcription_model is not None:
             result.update(

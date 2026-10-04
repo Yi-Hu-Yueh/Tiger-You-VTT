@@ -20,6 +20,7 @@ class SystemAudioSettings:
     chunk_seconds: float
     frames_per_buffer: int
     silence_peak_threshold: int = 16
+    queue_max_chunks: int = 6
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ VIDEO_UPLOAD_SETTINGS = VideoUploadSettings(
 SYSTEM_AUDIO_SETTINGS = SystemAudioSettings(
     chunk_seconds=_positive_float("SYSTEM_AUDIO_CHUNK_SECONDS", 10.0),
     frames_per_buffer=_positive_int("SYSTEM_AUDIO_FRAMES_PER_BUFFER", 1024),
+    queue_max_chunks=_positive_int("SYSTEM_AUDIO_QUEUE_MAX_CHUNKS", 6),
     silence_peak_threshold=_positive_int(
         "SYSTEM_AUDIO_SILENCE_PEAK_THRESHOLD", 16
     ),

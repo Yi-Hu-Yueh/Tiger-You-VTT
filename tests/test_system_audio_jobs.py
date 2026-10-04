@@ -77,14 +77,21 @@ def test_live_job_stop_during_whisper_retains_segment_and_cleans(
     manager, monkeypatch
 ) -> None:
     segment_ready = Event()
+    third_chunk_captured = Event()
     observed = {}
 
     class Capture(CaptureBase):
         instances = []
 
-        def capture_chunk(self, _should_stop):
+        def capture_chunk(self, should_stop):
             self.calls += 1
-            return CHUNK
+            if self.calls <= 3:
+                if self.calls == 3:
+                    third_chunk_captured.set()
+                return CHUNK
+            while not should_stop():
+                sleep(0.005)
+            return None
 
     def transcribe(path: Path, on_segment, should_stop, **options):
         observed["path"] = path
@@ -107,6 +114,7 @@ def test_live_job_stop_during_whisper_retains_segment_and_cleans(
     running = client.get(f"/api/jobs/{started['job_id']}").json()
     assert running["status"] == "running"
     assert running["txt"] == "A"
+    assert third_chunk_captured.wait(1)
 
     stopping = client.post(f"/api/jobs/{started['job_id']}/stop").json()
     assert stopping["status"] in {"stopping", "stopped"}
@@ -126,10 +134,16 @@ def test_live_job_stop_during_whisper_retains_segment_and_cleans(
         "retry_without_vad": False,
         "allow_empty": True,
     }
-    assert Capture.instances[0].calls == 1
+    assert Capture.instances[0].calls == 4
     assert Capture.instances[0].closed is True
     assert not observed["directory"].exists()
     assert frozen["elapsed_seconds"] == frozen_elapsed
+    assert stopped["result"]["captured_frames"] == 24000
+    assert stopped["result"]["enqueued_chunks"] == 3
+    assert stopped["result"]["processed_chunks"] == 1
+    assert stopped["result"]["discarded_chunks_on_stop"] == 2
+    assert stopped["result"]["dropped_chunks"] == 0
+    assert stopped["result"]["queue_overflow_count"] == 0
 
 
 def test_multiple_live_chunks_offset_once_and_remain_chronological(
@@ -141,9 +155,13 @@ def test_multiple_live_chunks_offset_once_and_remain_chronological(
     class Capture(CaptureBase):
         instances = []
 
-        def capture_chunk(self, _should_stop):
+        def capture_chunk(self, should_stop):
             self.calls += 1
-            return CHUNK
+            if self.calls <= 2:
+                return CHUNK
+            while not should_stop():
+                sleep(0.005)
+            return None
 
     def transcribe(_path, on_segment, should_stop, **_options):
         nonlocal call_count
@@ -175,9 +193,82 @@ def test_multiple_live_chunks_offset_once_and_remain_chronological(
     assert stopped["txt"] == "A,B"
     assert "00:00:01.200" in stopped["vtt"]
     assert "00:00:01,200" in stopped["srt"]
-    assert Capture.instances[0].calls == 2
+    assert Capture.instances[0].calls == 3
+    assert stopped["result"]["enqueued_chunks"] == 2
+    assert stopped["result"]["processed_chunks"] == 2
+    assert stopped["result"]["dropped_chunks"] == 0
     assert stopped["result"]["transcription_device"] == "cpu"
     assert stopped["result"]["transcription_compute_type"] == "int8"
+
+
+def test_slow_whisper_does_not_pause_capture_or_overlap_consumers(
+    manager, monkeypatch
+) -> None:
+    third_chunk_captured = Event()
+    third_chunk_processed = Event()
+    transcribe_calls = 0
+    active_transcriptions = 0
+    max_active_transcriptions = 0
+
+    class Capture(CaptureBase):
+        instances = []
+
+        def capture_chunk(self, should_stop):
+            self.calls += 1
+            if self.calls <= 3:
+                if self.calls == 3:
+                    third_chunk_captured.set()
+                return CHUNK
+            while not should_stop():
+                sleep(0.005)
+            return None
+
+    def transcribe(_path, on_segment, should_stop, **_options):
+        nonlocal transcribe_calls
+        nonlocal active_transcriptions
+        nonlocal max_active_transcriptions
+        transcribe_calls += 1
+        active_transcriptions += 1
+        max_active_transcriptions = max(
+            max_active_transcriptions, active_transcriptions
+        )
+        try:
+            if transcribe_calls == 1:
+                assert third_chunk_captured.wait(1)
+            relative = {
+                "start": 0.1,
+                "end": 0.4,
+                "text": chr(64 + transcribe_calls),
+            }
+            on_segment(relative)
+            if transcribe_calls == 3:
+                third_chunk_processed.set()
+                while not should_stop():
+                    sleep(0.005)
+                return result([relative], stopped=True)
+            return result([relative])
+        finally:
+            active_transcriptions -= 1
+
+    monkeypatch.setattr("app.services.jobs.SystemAudioCapture", Capture)
+    monkeypatch.setattr("app.services.jobs.transcribe_audio", transcribe)
+    started = client.post("/api/jobs/system-audio", json={}).json()
+    assert third_chunk_processed.wait(1)
+    client.post(f"/api/jobs/{started['job_id']}/stop")
+    stopped = wait_for_status(started["job_id"], {"stopped"})
+
+    assert stopped["segments"] == [
+        {"start": 0.1, "end": 0.4, "text": "A"},
+        {"start": 1.1, "end": 1.4, "text": "B"},
+        {"start": 2.1, "end": 2.4, "text": "C"},
+    ]
+    assert transcribe_calls == 3
+    assert max_active_transcriptions == 1
+    assert stopped["result"]["enqueued_chunks"] == 3
+    assert stopped["result"]["processed_chunks"] == 3
+    assert stopped["result"]["dropped_chunks"] == 0
+    assert Capture.instances[0].calls == 4
+    assert Capture.instances[0].closed is True
 
 
 def test_silent_live_chunk_keeps_job_running_without_text(manager, monkeypatch) -> None:
