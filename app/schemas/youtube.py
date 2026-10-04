@@ -125,3 +125,31 @@ class YouTubeSubtitleResponse(BaseModel):
     transcription_compute_type: str | None = Field(default=None, min_length=1)
     transcription_duration: float | None = Field(default=None, ge=0)
 
+
+class YouTubeSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: int = Field(ge=1)
+    video_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    url: HttpUrl
+    channel: str | None = None
+    duration: int | None = Field(default=None, ge=0)
+    duration_text: str | None = None
+    view_count: int | None = Field(default=None, ge=0)
+    upload_date: str | None = None
+    thumbnail: HttpUrl | None = None
+
+
+class YouTubeSearchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+    sort: Literal["relevance", "upload_date", "view_count", "duration"]
+    limit: int = Field(ge=1)
+    candidate_count: int = Field(ge=0)
+    enriched_count: int = Field(ge=0)
+    skipped_count: int = Field(ge=0)
+    native_date_order: bool
+    results: list[YouTubeSearchResult]
+

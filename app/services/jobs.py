@@ -4,6 +4,7 @@ import atexit
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, RLock
@@ -14,6 +15,11 @@ from uuid import uuid4
 from app.services.audio import process_uploaded_audio
 from app.services.errors import VideoExtractionError
 from app.services.media_range import offset_clip_segment
+from app.services.microphone import (
+    MicrophoneCapture,
+    microphone_pcm_is_silent,
+    write_microphone_wav,
+)
 from app.services.system_audio import (
     SystemAudioCapture,
     pcm_is_silent,
@@ -29,10 +35,15 @@ from app.services.whisper import transcribe_audio
 from app.services.youtube import get_subtitle
 
 
+logger = logging.getLogger(__name__)
+
+
 JobStatus = Literal[
     "queued", "running", "stopping", "stopped", "completed", "failed"
 ]
-JobSource = Literal["youtube", "upload", "audio", "system_audio"]
+JobSource = Literal[
+    "youtube", "upload", "audio", "system_audio", "microphone"
+]
 
 
 @dataclass
@@ -156,6 +167,16 @@ class JobManager:
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
 
+    def create_microphone_job(self, device_id: int) -> dict[str, str]:
+        record = _JobRecord(
+            job_id=uuid4().hex,
+            source_type="microphone",
+            created_at=self._clock(),
+            device_id=device_id,
+        )
+        self._submit(record)
+        return {"job_id": record.job_id, "status": "queued"}
+
     def _submit(self, record: _JobRecord) -> None:
         with self._lock:
             self._jobs[record.job_id] = record
@@ -250,6 +271,21 @@ class JobManager:
                 )
         self._on_segment(job_id, segment)
 
+    def _on_microphone_segment(
+        self, job_id: str, segment: dict[str, Any]
+    ) -> None:
+        with self._lock:
+            record = self._record(job_id)
+            if record.segments and float(segment["start"]) < float(
+                record.segments[-1]["start"]
+            ):
+                raise VideoExtractionError(
+                    502,
+                    "microphone_capture_failed",
+                    "Microphone transcript timestamps were not chronological.",
+                )
+        self._on_segment(job_id, segment)
+
     @staticmethod
     def _partial_result(record: _JobRecord) -> dict[str, Any]:
         return {
@@ -302,6 +338,12 @@ class JobManager:
                         "System-audio job is missing its output device"
                     )
                 result = self._run_system_audio_capture(job_id, device_id)
+            elif source_type == "microphone":
+                if device_id is None:
+                    raise RuntimeError(
+                        "Microphone job is missing its input device"
+                    )
+                result = self._run_microphone_capture(job_id, device_id)
             elif source_type in {"upload", "audio"}:
                 if (
                     media_path is None
@@ -387,8 +429,14 @@ class JobManager:
                 record.status = "stopped" if stopped else "completed"
                 record.finished_at = self._clock()
         except VideoExtractionError as exc:
+            logger.exception(
+                "Background job %s failed with controlled error %s",
+                job_id,
+                exc.code,
+            )
             self._fail_job(job_id, exc.code, exc.message)
         except Exception:
+            logger.exception("Background job %s failed unexpectedly", job_id)
             self._fail_job(
                 job_id,
                 "job_processing_failed",
@@ -454,6 +502,110 @@ class JobManager:
                                 500,
                                 "system_audio_capture_failed",
                                 "A temporary system-audio chunk could not be removed.",
+                            ) from exc
+
+                    processed_chunks += 1
+                    session_offset = chunk_end
+                    if language == "und" and transcription.language != "und":
+                        language = transcription.language
+                    transcription_model = transcription.model
+                    transcription_device = transcription.device
+                    transcription_compute_type = transcription.compute_type
+                    transcription_duration += transcription.duration_seconds
+                    if transcription.stopped or self._should_stop(job_id):
+                        break
+
+        with self._lock:
+            record = self._record(job_id)
+            segments = deepcopy(record.segments)
+            txt = record.txt
+            vtt = record.vtt
+            srt = record.srt
+        result: dict[str, Any] = {
+            "_stopped": True,
+            "language": language,
+            "type": "transcribed",
+            "selection_mode": "direct",
+            "segment_count": len(segments),
+            "duration": round(session_offset, 3),
+            "range_start": 0.0,
+            "range_end": round(session_offset, 3),
+            "segments": segments,
+            "vtt": vtt,
+            "txt": txt,
+            "srt": srt,
+            "capture_device": capture_device,
+            "capture_chunk_seconds": chunk_seconds,
+            "processed_chunks": processed_chunks,
+            "transcription_duration": round(transcription_duration, 3),
+        }
+        if transcription_model is not None:
+            result.update(
+                {
+                    "transcription_model": transcription_model,
+                    "transcription_device": transcription_device,
+                    "transcription_compute_type": transcription_compute_type,
+                }
+            )
+        return result
+
+    def _run_microphone_capture(
+        self, job_id: str, device_id: int
+    ) -> dict[str, Any]:
+        session_offset = 0.0
+        language = "und"
+        transcription_model: str | None = None
+        transcription_device: str | None = None
+        transcription_compute_type: str | None = None
+        transcription_duration = 0.0
+        processed_chunks = 0
+
+        with TemporaryDirectory(
+            prefix="tiger-you-vtt-microphone-"
+        ) as temporary_directory:
+            working_directory = Path(temporary_directory)
+            with MicrophoneCapture(device_id) as capture:
+                capture_device = capture.device.as_dict()
+                chunk_seconds = capture.settings.chunk_seconds
+                while not self._should_stop(job_id):
+                    chunk = capture.capture_chunk(
+                        lambda: self._should_stop(job_id)
+                    )
+                    if chunk is None or self._should_stop(job_id):
+                        break
+                    chunk_end = session_offset + chunk.duration_seconds
+                    if microphone_pcm_is_silent(
+                        chunk, capture.settings.silence_peak_threshold
+                    ):
+                        processed_chunks += 1
+                        session_offset = chunk_end
+                        continue
+                    chunk_path = working_directory / "current-chunk.wav"
+                    write_microphone_wav(chunk, chunk_path)
+
+                    def on_chunk_segment(segment: dict[str, Any]) -> None:
+                        translated = offset_clip_segment(
+                            segment, session_offset, chunk_end
+                        )
+                        if translated is not None:
+                            self._on_microphone_segment(job_id, translated)
+
+                    try:
+                        transcription = transcribe_audio(
+                            chunk_path,
+                            on_chunk_segment,
+                            lambda: self._should_stop(job_id),
+                            retry_without_vad=False,
+                            allow_empty=True,
+                        )
+                    finally:
+                        try:
+                            chunk_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            raise VideoExtractionError(
+                                500,
+                                "microphone_capture_failed",
+                                "A temporary microphone chunk could not be removed.",
                             ) from exc
 
                     processed_chunks += 1

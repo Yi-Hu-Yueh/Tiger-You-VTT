@@ -5,12 +5,30 @@ from app.schemas.youtube import (
     YouTubeInfoRequest,
     YouTubeSubtitleRequest,
     YouTubeSubtitleResponse,
+    YouTubeSearchResponse,
     YouTubeVideoInfoResponse,
 )
 from app.services.youtube import VideoExtractionError, get_subtitle, get_video_info
+from app.services.youtube_search import search_youtube
 
 
 router = APIRouter(prefix="/api/youtube", tags=["youtube"])
+
+
+@router.get("/search", response_model=YouTubeSearchResponse)
+async def youtube_search(
+    q: str,
+    sort: str = "relevance",
+    limit: int = 10,
+) -> YouTubeSearchResponse:
+    try:
+        result = await run_in_threadpool(search_youtube, q, sort, limit)
+    except VideoExtractionError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return YouTubeSearchResponse.model_validate(result)
 
 
 @router.post("/info", response_model=YouTubeVideoInfoResponse)

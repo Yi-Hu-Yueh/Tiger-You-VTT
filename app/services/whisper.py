@@ -222,6 +222,13 @@ class WhisperTranscriber:
             self._compute_type = compute_type
             return model
 
+    def _invalidate_model(self, model: Any) -> None:
+        with self._lock:
+            if self._model is model:
+                self._model = None
+                self._device = None
+                self._compute_type = None
+
     @staticmethod
     def _decode(
         model: Any,
@@ -309,6 +316,7 @@ class WhisperTranscriber:
             raise
         except Exception as exc:
             if self.settings.device == "auto" and self._device == "cuda":
+                self._invalidate_model(model)
                 model = self._activate_cpu_fallback()
                 try:
                     segments, info = self._decode(
@@ -319,12 +327,14 @@ class WhisperTranscriber:
                         stop_observed=stop_observed,
                     )
                 except Exception as fallback_exc:
+                    self._invalidate_model(model)
                     raise VideoExtractionError(
                         502,
                         "whisper_transcription_failed",
                         "Local faster-whisper transcription failed.",
                     ) from fallback_exc
             else:
+                self._invalidate_model(model)
                 raise VideoExtractionError(
                     502,
                     "whisper_transcription_failed",
@@ -352,6 +362,7 @@ class WhisperTranscriber:
             except VideoExtractionError:
                 raise
             except Exception as exc:
+                self._invalidate_model(model)
                 raise VideoExtractionError(
                     502,
                     "whisper_transcription_failed",

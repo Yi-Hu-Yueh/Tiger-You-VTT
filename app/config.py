@@ -22,6 +22,13 @@ class SystemAudioSettings:
     silence_peak_threshold: int = 16
 
 
+@dataclass(frozen=True)
+class MicrophoneSettings:
+    chunk_seconds: float
+    frames_per_buffer: int
+    silence_peak_threshold: int = 16
+
+
 def _choice(name: str, default: str, allowed: set[str] | None = None) -> str:
     value = os.getenv(name, default).strip()
     if not value:
@@ -76,3 +83,15 @@ SYSTEM_AUDIO_SETTINGS = SystemAudioSettings(
         "SYSTEM_AUDIO_SILENCE_PEAK_THRESHOLD", 16
     ),
 )
+
+MICROPHONE_SETTINGS = MicrophoneSettings(
+    chunk_seconds=_positive_float("MICROPHONE_CHUNK_SECONDS", 10.0),
+    frames_per_buffer=_positive_int("MICROPHONE_FRAMES_PER_BUFFER", 1024),
+    silence_peak_threshold=_positive_int(
+        "MICROPHONE_SILENCE_PEAK_THRESHOLD", 16
+    ),
+)
+
+YOUTUBE_SEARCH_DEFAULT_LIMIT = 10
+YOUTUBE_SEARCH_MAX_LIMIT = 20
+YOUTUBE_SEARCH_CANDIDATE_LIMIT = 30

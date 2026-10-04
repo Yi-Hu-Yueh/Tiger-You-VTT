@@ -4,10 +4,12 @@ from tempfile import TemporaryDirectory
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.schemas.jobs import JobStartResponse, JobStatusResponse, YouTubeJobRequest
+from app.schemas.microphone import MicrophoneJobRequest
 from app.schemas.system_audio import SystemAudioJobRequest
 from app.services.audio import safe_audio_upload_name, store_audio_upload
 from app.services.errors import VideoExtractionError
 from app.services.jobs import JOB_MANAGER, JobNotFoundError
+from app.services.microphone import select_microphone_device
 from app.services.system_audio import select_system_audio_device
 from app.services.video import safe_upload_name, store_upload
 
@@ -124,6 +126,23 @@ def create_system_audio_job(
             detail={"code": exc.code, "message": exc.message},
         ) from exc
     started = JOB_MANAGER.create_system_audio_job(device.id)
+    return JobStartResponse.model_validate(started)
+
+
+@router.post(
+    "/microphone", response_model=JobStartResponse, status_code=202
+)
+def create_microphone_job(
+    request: MicrophoneJobRequest,
+) -> JobStartResponse:
+    try:
+        device = select_microphone_device(request.device_id)
+    except VideoExtractionError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    started = JOB_MANAGER.create_microphone_job(device.id)
     return JobStartResponse.model_validate(started)
 
 

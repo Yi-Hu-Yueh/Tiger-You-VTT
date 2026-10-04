@@ -18,22 +18,77 @@
     textarea { min-height: 260px; padding: .8rem; resize: vertical; }
     button { border: 0; border-radius: 7px; padding: .7rem 1rem; cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .5; }
-    #startButton { background: #1668dc; color: white; }
-    #stopButton { background: #c62828; color: white; }
+    #startButton, #youtubeSearchStartButton { background: #1668dc; color: white; }
+    #stopButton, #youtubeSearchStopButton { background: #c62828; color: white; }
     .controls, .downloads { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
     .status { padding: .75rem; background: #eef3f8; border-radius: 7px; }
     .note { color: #52606d; font-size: .92rem; }
+    .search-controls { display: grid; gap: .75rem; }
+    .search-controls label { display: grid; gap: .35rem; }
+    #youtubeSearchResults { padding-left: 1.5rem; }
+    #youtubeSearchResults li { margin: .8rem 0; }
+    .search-result-heading { display: flex; align-items: baseline; gap: .5rem; }
+    .search-metadata { color: #52606d; font-size: .92rem; margin-top: .25rem; }
+    .search-job-status { color: #1668dc; font-size: .92rem; margin-top: .25rem; }
+    .primary-tabs { display: flex; gap: .4rem; margin-bottom: 1rem; border-bottom: 1px solid #ccd3da; }
+    .primary-tabs [role="tab"] { background: #eef3f8; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; }
+    .primary-tabs [role="tab"][aria-selected="true"] { background: white; border-color: #9aa8b5; font-weight: 700; }
+    [role="tabpanel"][hidden] { display: none; }
+    .search-transcripts { margin-top: 1.25rem; border-top: 1px solid #ccd3da; padding-top: .5rem; }
+    .search-transcripts h2 { font-size: 1.15rem; }
+    .search-transcript-panel { border: 1px solid #ccd3da; border-radius: 8px; padding: .8rem; margin: .8rem 0; }
+    .search-transcript-panel h3 { font-size: 1rem; margin: 0 0 .5rem; }
+    .search-transcript-panel textarea { min-height: 150px; margin-top: .5rem; }
+    .search-transcript-error { color: #b42318; font-size: .92rem; margin-top: .35rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>Tiger-You-VTT 字幕工具</h1>
-  <fieldset>
+  <div class="primary-tabs" role="tablist" aria-label="主要功能">
+    <button id="youtubeSearchTab" type="button" role="tab" aria-selected="true" aria-controls="youtubeSearchTabPanel">YouTube 搜尋</button>
+    <button id="sourceTab" type="button" role="tab" aria-selected="false" aria-controls="sourceTabPanel" tabindex="-1">來源</button>
+  </div>
+
+  <section id="youtubeSearchTabPanel" role="tabpanel" aria-labelledby="youtubeSearchTab">
+  <fieldset id="youtubeSearchSection">
+    <legend>YouTube 搜尋</legend>
+    <div class="search-controls">
+      <label>搜尋關鍵字：
+        <input id="youtubeSearchQuery" type="text" maxlength="200" placeholder="Agentic RAG">
+      </label>
+      <label>清單排名依據：
+        <select id="youtubeSearchSort">
+          <option value="relevance" selected>相關度</option>
+          <option value="upload_date">最新上傳</option>
+          <option value="view_count">觀看次數</option>
+          <option value="duration">影片長度</option>
+        </select>
+      </label>
+      <button id="youtubeSearchButton" type="button">搜尋</button>
+    </div>
+    <p id="youtubeSearchStatus" class="note" aria-live="polite">輸入關鍵字以搜尋 YouTube。</p>
+    <ol id="youtubeSearchResults"></ol>
+    <div class="controls">
+      <button id="youtubeSearchStartButton" type="button" disabled>開始取得字幕</button>
+      <button id="youtubeSearchStopButton" type="button" disabled>停止</button>
+    </div>
+    <p id="youtubeSearchBatchStatus" class="note" aria-live="polite">搜尋後勾選影片，再開始依序取得字幕。</p>
+    <section class="search-transcripts" aria-labelledby="youtubeTranscriptHeading">
+      <h2 id="youtubeTranscriptHeading">取得文字</h2>
+      <div id="youtubeTranscriptPanels"></div>
+    </section>
+  </fieldset>
+  </section>
+
+  <section id="sourceTabPanel" role="tabpanel" aria-labelledby="sourceTab" hidden>
+  <fieldset id="sourceSection">
     <legend>來源</legend>
     <label><input type="radio" name="mode" value="youtube" checked> YouTube 網址</label>
     <label><input type="radio" name="mode" value="upload"> 上傳影片</label>
     <label><input type="radio" name="mode" value="audio"> 上傳語音檔</label>
     <label><input type="radio" name="mode" value="system_audio"> 電腦播放聲音</label>
+    <label><input type="radio" name="mode" value="microphone"> 麥克風錄音</label>
     <div class="source">
       <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
       <input id="videoFile" type="file" accept="video/*" hidden>
@@ -43,6 +98,12 @@
           <select id="systemAudioDevice"></select>
         </label>
         <button id="refreshSystemAudioDevices" type="button">重新整理裝置</button>
+      </div>
+      <div id="microphoneControls" hidden>
+        <label>麥克風裝置:
+          <select id="microphoneDevice"></select>
+        </label>
+        <button id="refreshMicrophoneDevices" type="button">重新整理裝置</button>
       </div>
     </div>
   </fieldset>
@@ -79,16 +140,32 @@
     <button type="button" data-format="vtt" disabled>下載 VTT</button>
     <button type="button" data-format="srt" disabled>下載 SRT</button>
   </div>
+  </section>
 </main>
 
 <script>
   const terminalStates = new Set(["completed", "stopped", "failed"]);
   const DEFAULT_END_TIME = "0:10";
+  const SEARCH_BATCH_START_TIME = "0:0";
+  const SEARCH_BATCH_END_TIME = "0:10";
   let activeJobId = null;
   let latestJob = null;
   let pollTimer = null;
   let endTimeEdited = false;
+  let searchBatchRunning = false;
+  let searchBatchStopRequested = false;
+  let activeSearchJobId = null;
+  let activeSearchVideoId = null;
+  let searchStopSentJobId = null;
+  const selectedSearchVideos = new Map();
+  const searchResultRows = new Map();
+  const searchTranscriptPanels = new Map();
 
+  const primaryTabs = Array.from(document.querySelectorAll('.primary-tabs [role="tab"]'));
+  const youtubeSearchTab = document.querySelector("#youtubeSearchTab");
+  const sourceTab = document.querySelector("#sourceTab");
+  const youtubeSearchTabPanel = document.querySelector("#youtubeSearchTabPanel");
+  const sourceTabPanel = document.querySelector("#sourceTabPanel");
   const startButton = document.querySelector("#startButton");
   const stopButton = document.querySelector("#stopButton");
   const statusText = document.querySelector("#statusText");
@@ -102,10 +179,45 @@
   const systemAudioControls = document.querySelector("#systemAudioControls");
   const systemAudioDevice = document.querySelector("#systemAudioDevice");
   const refreshSystemAudioDevices = document.querySelector("#refreshSystemAudioDevices");
+  const microphoneControls = document.querySelector("#microphoneControls");
+  const microphoneDevice = document.querySelector("#microphoneDevice");
+  const refreshMicrophoneDevices = document.querySelector("#refreshMicrophoneDevices");
   const rangeControls = document.querySelector("#rangeControls");
   const startTime = document.querySelector("#startTime");
   const endTime = document.querySelector("#endTime");
   const downloadButtons = document.querySelectorAll("[data-format]");
+  const youtubeSearchQuery = document.querySelector("#youtubeSearchQuery");
+  const youtubeSearchSort = document.querySelector("#youtubeSearchSort");
+  const youtubeSearchButton = document.querySelector("#youtubeSearchButton");
+  const youtubeSearchStatus = document.querySelector("#youtubeSearchStatus");
+  const youtubeSearchResults = document.querySelector("#youtubeSearchResults");
+  const youtubeSearchStartButton = document.querySelector("#youtubeSearchStartButton");
+  const youtubeSearchStopButton = document.querySelector("#youtubeSearchStopButton");
+  const youtubeSearchBatchStatus = document.querySelector("#youtubeSearchBatchStatus");
+  const youtubeTranscriptPanels = document.querySelector("#youtubeTranscriptPanels");
+
+  function activatePrimaryTab(tab) {
+    const searchActive = tab === youtubeSearchTab;
+    youtubeSearchTab.setAttribute("aria-selected", String(searchActive));
+    youtubeSearchTab.tabIndex = searchActive ? 0 : -1;
+    sourceTab.setAttribute("aria-selected", String(!searchActive));
+    sourceTab.tabIndex = searchActive ? -1 : 0;
+    youtubeSearchTabPanel.hidden = !searchActive;
+    sourceTabPanel.hidden = searchActive;
+  }
+
+  primaryTabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activatePrimaryTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      const next = primaryTabs[(index + offset + primaryTabs.length) % primaryTabs.length];
+      activatePrimaryTab(next);
+      next.focus();
+    });
+  });
+  activatePrimaryTab(youtubeSearchTab);
 
   endTime.addEventListener("input", () => {
     endTimeEdited = true;
@@ -133,21 +245,389 @@
 
   refreshSystemAudioDevices.addEventListener("click", loadSystemAudioDevices);
 
+  async function loadMicrophoneDevices() {
+    microphoneDevice.replaceChildren();
+    const response = await fetch("/api/microphone/devices");
+    const payload = await response.json();
+    if (!response.ok) {
+      message.textContent = payload.detail?.message || "無法取得麥克風裝置";
+      return;
+    }
+    payload.devices.forEach((device) => {
+      const option = document.createElement("option");
+      option.value = String(device.id);
+      option.textContent = device.name;
+      option.selected = device.is_default;
+      microphoneDevice.append(option);
+    });
+    if (!payload.devices.length) {
+      message.textContent = "找不到可用的麥克風裝置";
+    }
+  }
+
+  refreshMicrophoneDevices.addEventListener("click", loadMicrophoneDevices);
+
   document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     radio.addEventListener("change", () => {
       if (!radio.checked) return;
       const upload = radio.value === "upload";
       const audio = radio.value === "audio";
       const systemAudio = radio.value === "system_audio";
+      const microphone = radio.value === "microphone";
+      const liveAudio = systemAudio || microphone;
       videoFile.hidden = !upload;
       audioFile.hidden = !audio;
       systemAudioControls.hidden = !systemAudio;
-      youtubeUrl.hidden = upload || audio || systemAudio;
-      rangeControls.hidden = systemAudio;
-      startTime.disabled = systemAudio;
-      endTime.disabled = systemAudio;
+      microphoneControls.hidden = !microphone;
+      youtubeUrl.hidden = upload || audio || liveAudio;
+      rangeControls.hidden = liveAudio;
+      startTime.disabled = liveAudio;
+      endTime.disabled = liveAudio;
       if (systemAudio) loadSystemAudioDevices();
+      if (microphone) loadMicrophoneDevices();
     });
+  });
+
+  function formatSearchMetadata(result) {
+    const details = [];
+    if (result.channel) details.push(`頻道：${result.channel}`);
+    if (result.duration_text) details.push(`長度：${result.duration_text}`);
+    if (result.view_count !== null) {
+      details.push(`觀看次數：${Number(result.view_count).toLocaleString()}`);
+    }
+    if (result.upload_date) details.push(`上傳日期：${result.upload_date}`);
+    return details.join(" ／ ");
+  }
+
+  function setSearchControlsLocked(locked) {
+    youtubeSearchQuery.disabled = locked;
+    youtubeSearchSort.disabled = locked;
+    youtubeSearchButton.disabled = locked;
+  }
+
+  function updateSearchBatchControls() {
+    youtubeSearchStartButton.disabled = searchBatchRunning || selectedSearchVideos.size === 0;
+    youtubeSearchStopButton.disabled = !searchBatchRunning;
+    searchResultRows.forEach(({ checkbox }) => {
+      checkbox.disabled = searchBatchRunning;
+    });
+  }
+
+  function createSearchTranscriptPanel(result) {
+    const panel = document.createElement("article");
+    panel.className = "search-transcript-panel";
+    panel.dataset.videoId = result.video_id;
+    const title = document.createElement("h3");
+    title.textContent = `影片：${result.title}`;
+    const statusLine = document.createElement("div");
+    statusLine.append("狀態：");
+    const status = document.createElement("strong");
+    status.className = "search-transcript-status";
+    status.textContent = "等待中";
+    statusLine.append(status);
+    const error = document.createElement("div");
+    error.className = "search-transcript-error";
+    error.hidden = true;
+    const textLabel = document.createElement("label");
+    textLabel.textContent = "取得文字：";
+    const text = document.createElement("textarea");
+    text.className = "search-transcript-text";
+    text.readOnly = true;
+    text.placeholder = "尚未取得字幕";
+    textLabel.append(text);
+    panel.append(title, statusLine, error, textLabel);
+    return { panel, status, error, text, result };
+  }
+
+  function syncSearchTranscriptPanels() {
+    const selectedIds = new Set(selectedSearchVideos.keys());
+    searchTranscriptPanels.forEach(({ panel }, videoId) => {
+      if (selectedIds.has(videoId)) return;
+      panel.remove();
+      searchTranscriptPanels.delete(videoId);
+    });
+    searchResultRows.forEach(({ result }) => {
+      if (!selectedIds.has(result.video_id)) return;
+      let transcriptPanel = searchTranscriptPanels.get(result.video_id);
+      if (!transcriptPanel) {
+        transcriptPanel = createSearchTranscriptPanel(result);
+        searchTranscriptPanels.set(result.video_id, transcriptPanel);
+      }
+      youtubeTranscriptPanels.append(transcriptPanel.panel);
+    });
+  }
+
+  function setSearchTranscriptText(videoId, text) {
+    if (typeof text !== "string") return;
+    const transcriptPanel = searchTranscriptPanels.get(videoId);
+    if (transcriptPanel) transcriptPanel.text.value = text;
+  }
+
+  function setSearchPanelError(videoId, error) {
+    const transcriptPanel = searchTranscriptPanels.get(videoId);
+    if (!transcriptPanel) return;
+    if (!error?.code || !error?.message) {
+      transcriptPanel.error.textContent = "";
+      transcriptPanel.error.hidden = true;
+      return;
+    }
+    transcriptPanel.error.textContent = `錯誤：${error.code} - ${error.message}`;
+    transcriptPanel.error.hidden = false;
+  }
+
+  function setSearchRowStatus(videoId, label) {
+    const row = searchResultRows.get(videoId);
+    if (row) {
+      row.status.textContent = label;
+      row.status.hidden = !label;
+    }
+    const transcriptPanel = searchTranscriptPanels.get(videoId);
+    if (transcriptPanel && label) transcriptPanel.status.textContent = label;
+  }
+
+  function setSearchVideoSelected(result, checked) {
+    if (checked) {
+      selectedSearchVideos.set(result.video_id, {
+        video_id: result.video_id,
+        title: result.title,
+        url: result.url
+      });
+      setSearchRowStatus(result.video_id, "等待中");
+    } else {
+      selectedSearchVideos.delete(result.video_id);
+    }
+    syncSearchTranscriptPanels();
+    setSearchRowStatus(result.video_id, checked ? "等待中" : "");
+    updateSearchBatchControls();
+  }
+
+  function resetSearchSelection() {
+    selectedSearchVideos.clear();
+    searchResultRows.clear();
+    searchTranscriptPanels.clear();
+    youtubeSearchResults.replaceChildren();
+    youtubeTranscriptPanels.replaceChildren();
+    updateSearchBatchControls();
+  }
+
+  function renderSearchResults(results) {
+    resetSearchSelection();
+    results.forEach((result, index) => {
+      const item = document.createElement("li");
+      item.dataset.videoId = result.video_id;
+      const heading = document.createElement("div");
+      heading.className = "search-result-heading";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "youtube-search-select";
+      checkbox.value = result.video_id;
+      checkbox.dataset.videoId = result.video_id;
+      checkbox.dataset.url = result.url;
+      checkbox.checked = index < 3;
+      checkbox.setAttribute("aria-label", `選取 ${result.title}`);
+      const title = document.createElement("a");
+      title.href = result.url;
+      title.target = "_blank";
+      title.rel = "noopener noreferrer";
+      title.textContent = result.title;
+      heading.append(checkbox, title);
+      item.append(heading);
+      const metadata = formatSearchMetadata(result);
+      if (metadata) {
+        const detail = document.createElement("div");
+        detail.className = "search-metadata";
+        detail.textContent = metadata;
+        item.append(detail);
+      }
+      const status = document.createElement("div");
+      status.className = "search-job-status";
+      status.hidden = true;
+      status.setAttribute("aria-live", "polite");
+      item.append(status);
+      searchResultRows.set(result.video_id, { checkbox, status, result });
+      checkbox.addEventListener("change", () => {
+        setSearchVideoSelected(result, checkbox.checked);
+      });
+      youtubeSearchResults.append(item);
+      setSearchVideoSelected(result, checkbox.checked);
+    });
+  }
+
+  youtubeSearchButton.addEventListener("click", async () => {
+    if (searchBatchRunning) return;
+    resetSearchSelection();
+    youtubeSearchStatus.textContent = "搜尋中...";
+    setSearchControlsLocked(true);
+    const parameters = new URLSearchParams({
+      q: youtubeSearchQuery.value,
+      sort: youtubeSearchSort.value,
+      limit: "10"
+    });
+    try {
+      const response = await fetch(`/api/youtube/search?${parameters}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        youtubeSearchStatus.textContent = payload.detail?.message || "YouTube 搜尋失敗。";
+        return;
+      }
+      if (!payload.results.length) {
+        youtubeSearchStatus.textContent = "找不到符合條件的 YouTube 影片。";
+        return;
+      }
+      renderSearchResults(payload.results);
+      youtubeSearchStatus.textContent = `找到 ${payload.results.length} 部影片。`;
+    } catch (_error) {
+      youtubeSearchStatus.textContent = "YouTube 搜尋失敗。";
+    } finally {
+      if (!searchBatchRunning) setSearchControlsLocked(false);
+      updateSearchBatchControls();
+    }
+  });
+
+  function getCheckedSearchVideos() {
+    return Array.from(
+      youtubeSearchResults.querySelectorAll(".youtube-search-select:checked")
+    ).map((checkbox) => selectedSearchVideos.get(checkbox.dataset.videoId));
+  }
+
+  function searchJobStatusLabel(status) {
+    if (status === "completed") return "完成";
+    if (status === "stopped") return "已停止";
+    if (status === "failed") return "失敗";
+    return "處理中";
+  }
+
+  async function waitForSearchJobTerminal(jobId) {
+    while (true) {
+      const response = await fetch(`/api/jobs/${jobId}`);
+      if (!response.ok) throw new Error("無法取得工作狀態");
+      const job = await response.json();
+      setSearchRowStatus(activeSearchVideoId, searchJobStatusLabel(job.status));
+      setSearchTranscriptText(activeSearchVideoId, job.txt);
+      setSearchPanelError(activeSearchVideoId, job.error);
+      if (terminalStates.has(job.status)) return job;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
+  async function stopActiveSearchJob() {
+    if (!activeSearchJobId) return null;
+    if (searchStopSentJobId === activeSearchJobId) return null;
+    searchStopSentJobId = activeSearchJobId;
+    const response = await fetch(`/api/jobs/${activeSearchJobId}/stop`, {
+      method: "POST"
+    });
+    if (!response.ok) throw new Error("無法停止工作");
+    const job = await response.json();
+    setSearchRowStatus(activeSearchVideoId, searchJobStatusLabel(job.status));
+    setSearchTranscriptText(activeSearchVideoId, job.txt);
+    setSearchPanelError(activeSearchVideoId, job.error);
+    return job;
+  }
+
+  async function processSearchVideo(video) {
+    activeSearchVideoId = video.video_id;
+    setSearchRowStatus(video.video_id, "處理中");
+    youtubeSearchBatchStatus.textContent = `正在處理：${video.title}`;
+    try {
+      const response = await fetch("/api/jobs/youtube", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: video.url,
+          start_time: SEARCH_BATCH_START_TIME,
+          end_time: SEARCH_BATCH_END_TIME,
+          end_time_is_default: true
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setSearchRowStatus(video.video_id, "失敗");
+        setSearchPanelError(video.video_id, payload.detail);
+        return "failed";
+      }
+      activeSearchJobId = payload.job_id;
+      searchStopSentJobId = null;
+      if (searchBatchStopRequested) await stopActiveSearchJob();
+      const terminalJob = await waitForSearchJobTerminal(activeSearchJobId);
+      setSearchRowStatus(video.video_id, searchJobStatusLabel(terminalJob.status));
+      setSearchTranscriptText(video.video_id, terminalJob.txt);
+      setSearchPanelError(video.video_id, terminalJob.error);
+      return terminalJob.status;
+    } catch (_error) {
+      const status = searchBatchStopRequested ? "stopped" : "failed";
+      setSearchRowStatus(video.video_id, searchJobStatusLabel(status));
+      if (status === "failed") {
+        setSearchPanelError(video.video_id, {
+          code: "job_status_failed",
+          message: "The background job status could not be retrieved."
+        });
+      }
+      return status;
+    } finally {
+      activeSearchJobId = null;
+      activeSearchVideoId = null;
+    }
+  }
+
+  function formatSearchBatchSummary(queue, outcomes, stoppedByUser) {
+    const statuses = Array.from(outcomes.values());
+    const completed = statuses.filter((status) => status === "completed").length;
+    const failed = statuses.filter((status) => status === "failed").length;
+    const stopped = statuses.filter((status) => status === "stopped").length;
+    const notStarted = queue.length - outcomes.size;
+    if (stoppedByUser) {
+      return `批次處理已停止：${completed} 成功，${failed} 失敗，${stopped} 已停止，${notStarted} 未開始。`;
+    }
+    return `批次處理完成：${completed} 成功，${failed} 失敗，${stopped} 停止。`;
+  }
+
+  async function runSearchBatch() {
+    if (searchBatchRunning) return;
+    const queue = getCheckedSearchVideos().filter(Boolean);
+    if (!queue.length) return;
+    searchBatchRunning = true;
+    searchBatchStopRequested = false;
+    const outcomes = new Map();
+    setSearchControlsLocked(true);
+    updateSearchBatchControls();
+    queue.forEach((video) => {
+      setSearchRowStatus(video.video_id, "等待中");
+      setSearchTranscriptText(video.video_id, "");
+      setSearchPanelError(video.video_id, null);
+    });
+    try {
+      for (const video of queue) {
+        if (searchBatchStopRequested) break;
+        const status = await processSearchVideo(video);
+        outcomes.set(video.video_id, status);
+      }
+    } finally {
+      const stoppedByUser = searchBatchStopRequested;
+      searchBatchRunning = false;
+      activeSearchJobId = null;
+      activeSearchVideoId = null;
+      youtubeSearchStopButton.textContent = "停止";
+      setSearchControlsLocked(false);
+      updateSearchBatchControls();
+      youtubeSearchBatchStatus.textContent = formatSearchBatchSummary(
+        queue, outcomes, stoppedByUser
+      );
+    }
+  }
+
+  youtubeSearchStartButton.addEventListener("click", runSearchBatch);
+
+  youtubeSearchStopButton.addEventListener("click", async () => {
+    searchBatchStopRequested = true;
+    youtubeSearchStopButton.disabled = true;
+    youtubeSearchStopButton.textContent = "停止中...";
+    youtubeSearchBatchStatus.textContent = "正在停止搜尋結果批次工作...";
+    try {
+      await stopActiveSearchJob();
+    } catch (_error) {
+      if (activeSearchVideoId) setSearchRowStatus(activeSearchVideoId, "失敗");
+    }
   });
 
   function formatElapsedTime(seconds) {
@@ -209,6 +689,16 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ device_id: Number(systemAudioDevice.value) })
+      });
+    } else if (mode === "microphone") {
+      if (!microphoneDevice.value) {
+        message.textContent = "請選擇麥克風裝置";
+        return;
+      }
+      response = await fetch("/api/jobs/microphone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: Number(microphoneDevice.value) })
       });
     } else if (mode === "upload" || mode === "audio") {
       const selectedFile = mode === "audio" ? audioFile : videoFile;

@@ -203,6 +203,75 @@ def test_failed_cuda_model_is_replaced_by_cached_cpu_fallback() -> None:
     assert first.device == second.device == "cpu"
 
 
+def test_failed_cached_runtime_is_invalidated_before_next_job() -> None:
+    broken = FakeModel()
+    broken.transcribe = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("runtime poisoned")
+    )
+    healthy = FakeModel()
+    models = iter((broken, healthy))
+    factory_calls = []
+
+    def factory(_model: str, device: str, compute_type: str):
+        factory_calls.append((device, compute_type))
+        return next(models)
+
+    transcriber = WhisperTranscriber(
+        settings("cpu", "int8"),
+        model_factory=factory,
+        compute_type_provider=lambda _device: {"int8"},
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        transcriber.transcribe(Path("audio.webm"))
+    assert error.value.code == "whisper_transcription_failed"
+    assert transcriber.loaded is False
+
+    result = transcriber.transcribe(Path("audio.webm"))
+
+    assert result.language == "zh"
+    assert factory_calls == [("cpu", "int8"), ("cpu", "int8")]
+
+
+def test_failed_cuda_and_cpu_fallback_load_do_not_poison_next_job() -> None:
+    broken_cuda = FakeModel()
+    broken_cuda.transcribe = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("cuda runtime failed")
+    )
+    healthy_cuda = FakeModel()
+    cuda_models = iter((broken_cuda, healthy_cuda))
+    calls = []
+
+    def factory(_model: str, device: str, compute_type: str):
+        calls.append((device, compute_type))
+        if device == "cpu":
+            raise RuntimeError("cpu model load failed")
+        return next(cuda_models)
+
+    transcriber = WhisperTranscriber(
+        settings(),
+        model_factory=factory,
+        cuda_counter=lambda: 1,
+        compute_type_provider=lambda device: (
+            {"int8_float32"} if device == "cuda" else {"int8"}
+        ),
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        transcriber.transcribe(Path("audio.webm"))
+    assert error.value.code == "whisper_model_load_failed"
+    assert transcriber.loaded is False
+
+    result = transcriber.transcribe(Path("audio.webm"))
+
+    assert result.device == "cuda"
+    assert calls == [
+        ("cuda", "int8_float32"),
+        ("cpu", "int8"),
+        ("cuda", "int8_float32"),
+    ]
+
+
 def test_explicit_cpu_never_probes_cuda() -> None:
     calls: list[tuple[str, str]] = []
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -145,7 +146,13 @@ def test_audio_download_uses_audio_only_configuration(tmp_path: Path) -> None:
         (tmp_path / "audio.webm").write_bytes(b"audio-only")
 
     ydl.extract_info.side_effect = write_audio
-    with patch("app.services.youtube.yt_dlp.YoutubeDL", return_value=ydl) as factory:
+    with (
+        patch("app.services.youtube.yt_dlp.YoutubeDL", return_value=ydl) as factory,
+        patch(
+            "app.services.youtube.probe_media_info",
+            return_value=SimpleNamespace(has_audio=True, duration=1.0),
+        ),
+    ):
         result = _download_audio_only("https://youtube.test/watch?v=x", tmp_path)
 
     options = factory.call_args.args[0]
@@ -166,6 +173,93 @@ def test_audio_download_failure_is_controlled(tmp_path: Path) -> None:
 
     assert error.value.code == "audio_download_failed"
     assert "signed URL" not in error.value.message
+
+
+def test_transient_audio_403_is_retried_once_then_validated(tmp_path: Path) -> None:
+    first = MagicMock()
+    first.__enter__.return_value = first
+    first.extract_info.side_effect = DownloadError("HTTP Error 403: Forbidden")
+    second = MagicMock()
+    second.__enter__.return_value = second
+
+    def write_audio(_url: str, download: bool) -> None:
+        assert download is True
+        (tmp_path / "audio.webm").write_bytes(b"audio")
+
+    second.extract_info.side_effect = write_audio
+    with (
+        patch(
+            "app.services.youtube.yt_dlp.YoutubeDL",
+            side_effect=[first, second],
+        ) as factory,
+        patch(
+            "app.services.youtube.probe_media_info",
+            return_value=SimpleNamespace(has_audio=True, duration=2.0),
+        ),
+    ):
+        result = _download_audio_only("https://youtube.test/watch?v=x", tmp_path)
+
+    assert factory.call_count == 2
+    assert result.name == "audio.webm"
+
+
+def test_invalid_downloaded_audio_is_rejected_before_whisper(tmp_path: Path) -> None:
+    ydl = MagicMock()
+    ydl.__enter__.return_value = ydl
+    ydl.extract_info.side_effect = lambda *_args, **_kwargs: (
+        tmp_path / "audio.webm"
+    ).write_bytes(b"not-empty")
+
+    with (
+        patch("app.services.youtube.yt_dlp.YoutubeDL", return_value=ydl),
+        patch(
+            "app.services.youtube.probe_media_info",
+            return_value=SimpleNamespace(has_audio=False, duration=1.0),
+        ),
+        pytest.raises(VideoExtractionError) as error,
+    ):
+        _download_audio_only("https://youtube.test/watch?v=x", tmp_path)
+
+    assert error.value.code == "invalid_downloaded_audio"
+
+
+def test_auto_subtitle_download_failure_uses_audio_fallback(monkeypatch) -> None:
+    metadata = info(subtitles={"en": vtt_track()})
+    expected = {"type": "transcribed", "txt": "fallback"}
+    monkeypatch.setattr("app.services.youtube._extract_raw_info", lambda _url: metadata)
+    monkeypatch.setattr(
+        "app.services.youtube._download_selected_vtt",
+        lambda *_args: (_ for _ in ()).throw(
+            VideoExtractionError(502, "subtitle_download_failed", "failed")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.youtube._fallback_transcription",
+        lambda *_args: expected,
+    )
+
+    assert get_subtitle("https://www.youtube.com/watch?v=abc123") is expected
+
+
+def test_explicit_subtitle_download_failure_does_not_use_whisper(monkeypatch) -> None:
+    metadata = info(subtitles={"en": vtt_track()})
+    monkeypatch.setattr("app.services.youtube._extract_raw_info", lambda _url: metadata)
+    monkeypatch.setattr(
+        "app.services.youtube._download_selected_vtt",
+        lambda *_args: (_ for _ in ()).throw(
+            VideoExtractionError(502, "subtitle_download_failed", "failed")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.youtube._fallback_transcription",
+        lambda *_args: pytest.fail("Explicit selection must not fall back"),
+    )
+
+    with pytest.raises(VideoExtractionError) as error:
+        get_subtitle(
+            "https://www.youtube.com/watch?v=abc123", "en", "manual"
+        )
+    assert error.value.code == "subtitle_download_failed"
 
 
 def test_missing_audio_file_after_download_is_controlled(tmp_path: Path) -> None:

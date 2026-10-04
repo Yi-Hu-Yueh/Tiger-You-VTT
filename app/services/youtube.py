@@ -1,5 +1,7 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import logging
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
@@ -17,6 +19,10 @@ from app.services.media_range import (
     offset_clip_segments,
     resolve_media_range,
 )
+from app.services.video import probe_media_info
+
+
+logger = logging.getLogger(__name__)
 
 
 YDL_OPTIONS: dict[str, Any] = {
@@ -368,6 +374,61 @@ def _has_usable_audio(info: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_transient_download_error(error: DownloadError) -> bool:
+    message = str(error).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "http error 403",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "remote end closed",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _clear_failed_audio_download(directory: Path) -> None:
+    for path in directory.iterdir():
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
+def _validate_downloaded_audio(audio_path: Path) -> None:
+    try:
+        if not audio_path.is_file() or audio_path.stat().st_size <= 0:
+            raise VideoExtractionError(
+                502,
+                "invalid_downloaded_audio",
+                "The downloaded YouTube audio is empty or unavailable.",
+            )
+        media = probe_media_info(
+            audio_path,
+            invalid_code="invalid_downloaded_audio",
+            invalid_message="The downloaded YouTube audio is invalid or unreadable.",
+        )
+    except VideoExtractionError as exc:
+        if exc.code == "media_probe_failed":
+            raise
+        raise VideoExtractionError(
+            502,
+            "invalid_downloaded_audio",
+            "The downloaded YouTube audio is invalid or unreadable.",
+        ) from exc
+    if (
+        not media.has_audio
+        or media.duration is None
+        or not math.isfinite(media.duration)
+        or media.duration <= 0
+    ):
+        raise VideoExtractionError(
+            502,
+            "invalid_downloaded_audio",
+            "The downloaded YouTube audio has no usable audio stream.",
+        )
+
+
 def _download_audio_only(url: str, directory: Path) -> Path:
     options = {
         **YDL_OPTIONS,
@@ -377,21 +438,30 @@ def _download_audio_only(url: str, directory: Path) -> Path:
         "nopart": True,
     }
 
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.extract_info(url, download=True)
-    except DownloadError as exc:
-        raise VideoExtractionError(
-            502,
-            "audio_download_failed",
-            "yt-dlp could not download the selected audio-only stream.",
-        ) from exc
-    except Exception as exc:
-        raise VideoExtractionError(
-            502,
-            "audio_download_failed",
-            "The audio-only stream could not be downloaded.",
-        ) from exc
+    for attempt in range(2):
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.extract_info(url, download=True)
+            break
+        except DownloadError as exc:
+            if attempt == 0 and _is_transient_download_error(exc):
+                logger.warning(
+                    "Retrying one transient YouTube audio download failure",
+                    exc_info=True,
+                )
+                _clear_failed_audio_download(directory)
+                continue
+            raise VideoExtractionError(
+                502,
+                "audio_download_failed",
+                "yt-dlp could not download the selected audio-only stream.",
+            ) from exc
+        except Exception as exc:
+            raise VideoExtractionError(
+                502,
+                "audio_download_failed",
+                "The audio-only stream could not be downloaded.",
+            ) from exc
 
     audio_files = [
         path
@@ -404,6 +474,7 @@ def _download_audio_only(url: str, directory: Path) -> Path:
             "audio_download_failed",
             "yt-dlp did not produce exactly one audio-only file.",
         )
+    _validate_downloaded_audio(audio_files[0])
     return audio_files[0]
 
 
@@ -598,11 +669,24 @@ def get_subtitle(
         _validate_selected_track(info, language, track_type)
         selected = SelectedSubtitleTrack(language, track_type, "explicit")
 
-    with TemporaryDirectory(prefix="tiger-you-vtt-") as temporary_directory:
-        vtt_content = _download_selected_vtt(
-            url, selected.language, selected.type, Path(temporary_directory)
+    try:
+        with TemporaryDirectory(prefix="tiger-you-vtt-") as temporary_directory:
+            vtt_content = _download_selected_vtt(
+                url, selected.language, selected.type, Path(temporary_directory)
+            )
+            all_segments = parse_vtt(vtt_content)
+    except VideoExtractionError as exc:
+        if selected.selection_mode == "explicit" or exc.code != "subtitle_download_failed":
+            raise
+        logger.warning(
+            "Selected YouTube subtitle download failed; using audio fallback",
+            exc_info=True,
         )
-        all_segments = parse_vtt(vtt_content)
+        if on_segment is None and should_stop is None:
+            return _fallback_transcription(url, info, media_range)
+        return _fallback_transcription(
+            url, info, media_range, on_segment, should_stop
+        )
 
     segments = (
         all_segments

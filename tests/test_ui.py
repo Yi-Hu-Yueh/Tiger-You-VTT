@@ -20,8 +20,27 @@ def test_root_serves_minimal_job_interface() -> None:
     assert "/api/jobs/video" in html
     assert "/api/jobs/audio" in html
     assert "/api/jobs/youtube" in html
+    assert 'id="youtubeSearchQuery"' in html
+    assert 'id="youtubeSearchButton"' in html
+    assert 'id="youtubeSearchSort"' in html
+    assert html.index('id="youtubeSearchSection"') < html.index('id="sourceSection"')
+    assert html.count('id="youtubeSearchSection"') == 1
+    assert 'id="youtubeSearchStartButton" type="button" disabled' in html
+    assert 'id="youtubeSearchStopButton" type="button" disabled' in html
+    assert '<option value="relevance" selected>相關度</option>' in html
+    assert '<option value="upload_date">最新上傳</option>' in html
+    assert '<option value="view_count">觀看次數</option>' in html
+    assert '<option value="duration">影片長度</option>' in html
+    assert 'fetch(`/api/youtube/search?${parameters}`)' in html
+    assert "sort: youtubeSearchSort.value" in html
+    assert "function renderSearchResults(results)" in html
+    assert "找不到符合條件的 YouTube 影片。" in html
+    assert "YouTube 搜尋失敗。" in html
+    assert 'id="youtubeUrl" type="url"' in html
+    assert "youtubeUrl.value" in html
     assert 'value="audio"> 上傳語音檔' in html
     assert 'value="system_audio"> 電腦播放聲音' in html
+    assert 'value="microphone"> 麥克風錄音' in html
     assert 'id="audioFile" type="file"' in html
     assert 'accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,audio/*"' in html
     assert 'const selectedFile = mode === "audio" ? audioFile : videoFile' in html
@@ -30,9 +49,16 @@ def test_root_serves_minimal_job_interface() -> None:
     assert 'id="systemAudioControls" hidden' in html
     assert 'fetch("/api/system-audio/devices")' in html
     assert 'fetch("/api/jobs/system-audio"' in html
-    assert "rangeControls.hidden = systemAudio" in html
-    assert "startTime.disabled = systemAudio" in html
-    assert "endTime.disabled = systemAudio" in html
+    assert 'id="microphoneDevice"' in html
+    assert 'id="microphoneControls" hidden' in html
+    assert 'fetch("/api/microphone/devices")' in html
+    assert 'fetch("/api/jobs/microphone"' in html
+    assert "systemAudioControls.hidden = !systemAudio" in html
+    assert "microphoneControls.hidden = !microphone" in html
+    assert "const liveAudio = systemAudio || microphone" in html
+    assert "rangeControls.hidden = liveAudio" in html
+    assert "startTime.disabled = liveAudio" in html
+    assert "endTime.disabled = liveAudio" in html
     assert "`/api/jobs/${activeJobId}`" in html
     assert "`/api/jobs/${activeJobId}/stop`" in html
     assert "setTimeout(pollJob, 1000)" in html
