@@ -103,6 +103,11 @@
           <select id="systemAudioDevice"></select>
         </label>
         <button id="refreshSystemAudioDevices" type="button">重新整理裝置</button>
+        <div id="overlayLauncherControls">
+          <p><strong>桌面字幕 Overlay</strong></p>
+          <button id="openOverlayButton" type="button">開啟桌面字幕 Overlay</button>
+          <p id="overlayLauncherStatus" class="note" aria-live="polite">在 Windows 桌面顯示即時字幕，不需要保持瀏覽器在前景。</p>
+        </div>
       </div>
       <div id="microphoneControls" hidden>
         <label>麥克風裝置:
@@ -169,6 +174,7 @@
   let activeSearchJobId = null;
   let activeSearchVideoId = null;
   let searchStopSentJobId = null;
+  let overlayStatusTimer = null;
   const selectedSearchVideos = new Map();
   const searchResultRows = new Map();
   const searchTranscriptPanels = new Map();
@@ -191,6 +197,8 @@
   const systemAudioControls = document.querySelector("#systemAudioControls");
   const systemAudioDevice = document.querySelector("#systemAudioDevice");
   const refreshSystemAudioDevices = document.querySelector("#refreshSystemAudioDevices");
+  const openOverlayButton = document.querySelector("#openOverlayButton");
+  const overlayLauncherStatus = document.querySelector("#overlayLauncherStatus");
   const microphoneControls = document.querySelector("#microphoneControls");
   const microphoneDevice = document.querySelector("#microphoneDevice");
   const refreshMicrophoneDevices = document.querySelector("#refreshMicrophoneDevices");
@@ -220,6 +228,8 @@
     sourceTab.tabIndex = searchActive ? -1 : 0;
     youtubeSearchTabPanel.hidden = !searchActive;
     sourceTabPanel.hidden = searchActive;
+    if (searchActive) stopOverlayStatusPolling();
+    else if (!systemAudioControls.hidden) beginOverlayStatusPolling();
   }
 
   primaryTabs.forEach((tab, index) => {
@@ -261,6 +271,77 @@
 
   refreshSystemAudioDevices.addEventListener("click", loadSystemAudioDevices);
 
+  function renderOverlayLauncherStatus(state) {
+    if (!state.available) {
+      openOverlayButton.textContent = "Overlay 無法使用";
+      openOverlayButton.disabled = true;
+      overlayLauncherStatus.textContent = "請安裝 requirements-overlay.txt 中的選用套件。";
+    } else if (state.running) {
+      openOverlayButton.textContent = "Overlay 已開啟";
+      openOverlayButton.disabled = true;
+      overlayLauncherStatus.textContent = "桌面字幕 Overlay 正在執行。";
+    } else {
+      openOverlayButton.textContent = "開啟桌面字幕 Overlay";
+      openOverlayButton.disabled = false;
+      overlayLauncherStatus.textContent = "在 Windows 桌面顯示即時字幕，不需要保持瀏覽器在前景。";
+    }
+  }
+
+  async function refreshOverlayStatus() {
+    try {
+      const response = await fetch("/api/overlay/status");
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail?.message || "無法取得 Overlay 狀態");
+      }
+      renderOverlayLauncherStatus(payload);
+    } catch (error) {
+      openOverlayButton.textContent = "Overlay 無法使用";
+      openOverlayButton.disabled = true;
+      overlayLauncherStatus.textContent = error.message || "無法取得 Overlay 狀態";
+    }
+  }
+
+  function stopOverlayStatusPolling() {
+    clearTimeout(overlayStatusTimer);
+    overlayStatusTimer = null;
+  }
+
+  function scheduleOverlayStatusPolling() {
+    stopOverlayStatusPolling();
+    if (systemAudioControls.hidden || sourceTabPanel.hidden) return;
+    overlayStatusTimer = setTimeout(async () => {
+      await refreshOverlayStatus();
+      scheduleOverlayStatusPolling();
+    }, 3000);
+  }
+
+  async function beginOverlayStatusPolling() {
+    stopOverlayStatusPolling();
+    if (systemAudioControls.hidden || sourceTabPanel.hidden) return;
+    await refreshOverlayStatus();
+    scheduleOverlayStatusPolling();
+  }
+
+  openOverlayButton.addEventListener("click", async () => {
+    openOverlayButton.disabled = true;
+    overlayLauncherStatus.textContent = "正在啟動桌面字幕 Overlay...";
+    try {
+      const response = await fetch("/api/overlay/start", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail?.message || "桌面字幕 Overlay 啟動失敗。");
+      }
+      renderOverlayLauncherStatus(payload);
+    } catch (error) {
+      openOverlayButton.textContent = "開啟桌面字幕 Overlay";
+      openOverlayButton.disabled = false;
+      overlayLauncherStatus.textContent = error.message || "桌面字幕 Overlay 啟動失敗。";
+    } finally {
+      scheduleOverlayStatusPolling();
+    }
+  });
+
   async function loadMicrophoneDevices() {
     microphoneDevice.replaceChildren();
     const response = await fetch("/api/microphone/devices");
@@ -301,7 +382,12 @@
       enableDiarization.disabled = liveAudio;
       startTime.disabled = liveAudio;
       endTime.disabled = liveAudio;
-      if (systemAudio) loadSystemAudioDevices();
+      if (systemAudio) {
+        loadSystemAudioDevices();
+        beginOverlayStatusPolling();
+      } else {
+        stopOverlayStatusPolling();
+      }
       if (microphone) loadMicrophoneDevices();
     });
   });

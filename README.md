@@ -1,7 +1,7 @@
 # Tiger-You-VTT
 
 > YouTube 搜尋 / YouTube URL / 本機影片 / 語音檔 / Windows 系統音訊 / 麥克風的字幕擷取與語音轉文字工具  
-> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback，以及可選的 **Speaker Diarization（Speaker 1 / Speaker 2 / …）**。
+> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback、可選 **Speaker Diarization**，以及 Windows **原生桌面字幕 Overlay**。
 
 chatgpt: https://chatgpt.com/share/6ac07112-ac1c-83ee-910d-5a7d1d747d79
 
@@ -28,6 +28,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 - [▶️ 啟用虛擬環境](#activate-venv)
 - [🔎 YouTube 搜尋](#youtube-search)
 - [🗣️ Speaker Diarization](#speaker-diarization)
+- [🪟 Windows 桌面字幕 Overlay](#desktop-overlay)
 - [🖥️ UI 操作說明](#section-11)
 - [🔌 API](#section-19)
 - [🧪 執行測試](#section-28)
@@ -41,6 +42,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
    - [YouTube 搜尋](#youtube-search)
    - YouTube URL / 本機影片 / 語音檔 / System Audio / Microphone
    - [Speaker Diarization](#speaker-diarization)
+   - [Windows 桌面字幕 Overlay](#desktop-overlay)
 2. [主要功能](#section-2)
 3. [License](#section-3)
 
@@ -133,6 +135,20 @@ Speaker 1：...
 ```
 
 此功能只回答 **who spoke when**，不會辨識真人姓名或身份。預設 **OFF**；關閉時不載入 pyannote，也不增加正常字幕/Whisper 流程成本。
+
+<a id="desktop-overlay"></a>
+### 可選能力：Windows 原生桌面字幕 Overlay
+
+System Audio 可另外使用 PySide6 原生桌面字幕視窗，把既有 `/api/jobs/system-audio` 的 partial transcript 顯示在其他 Windows 應用程式上方：
+
+```text
+Windows 聲音
+→ Tiger-You-VTT System Audio Job
+→ 500 ms polling
+→ Native PySide6 Overlay
+```
+
+Web UI 在 `來源 → 電腦播放聲音` 提供 **開啟桌面字幕 Overlay**。Web 端只負責啟動原生 Overlay；真正的音訊裝置選擇、開始/停止字幕仍在原生控制視窗操作。Overlay 不自行開 WASAPI、不建立第二套 Whisper。
 
 ---
 
@@ -517,6 +533,13 @@ TXT segment 使用英文半形逗號 `,` 串接：
 <a id="section-2"></a>
 ## 2. 主要功能
 
+- ✅ Windows 原生桌面字幕 Overlay（PySide6）
+- ✅ Web UI 可從「來源 → 電腦播放聲音」啟動 Overlay
+- ✅ Overlay 永遠置頂 / Top / Bottom / Custom / 拖曳
+- ✅ Overlay 字體大小、背景透明度、顯示行數可即時調整
+- ✅ Overlay 只重用既有 FastAPI System Audio Job，不直接開 WASAPI
+- ✅ localhost-only Overlay launcher；固定 `sys.executable -m app.overlay.main`、`shell=False`
+- ✅ 防止重複啟動同一 backend-owned Overlay process
 - ✅ 可選 Speaker Diarization（預設 OFF）
 - ✅ Speaker 1 / Speaker 2 / Speaker 3… 自動說話者分群
 - ✅ speaker-aware TXT / VTT / SRT
@@ -763,6 +786,18 @@ hf auth whoami
 
 ---
 
+## 6.4 原生桌面字幕視窗（選用）
+
+Windows 原生字幕視窗使用獨立的 PySide6 選用依賴；目前驗證版本為 **PySide6 6.11.2**。一般 FastAPI Server 不需要匯入或安裝 Overlay UI 才能啟動：
+
+```powershell
+python -m pip install -r requirements-overlay.txt
+```
+
+這個視窗是既有 System Audio API 的 client，不會自行擷取音訊或啟動第二套 Whisper。Core FastAPI 模組不會在普通啟動時 import PySide6。
+
+---
+
 <a id="section-7"></a>
 # 7. CPU 模式
 
@@ -923,6 +958,38 @@ Uvicorn running on http://127.0.0.1:8000
 ```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
+
+## 9.3 啟動 Windows 原生桌面字幕（選用）
+
+先保持 Server 執行。一般使用者可在 Web UI 依序選擇：
+
+```text
+來源 → 電腦播放聲音 → 開啟桌面字幕 Overlay
+```
+
+Web UI 會透過 localhost-only launcher 啟動固定命令：
+
+```text
+<目前 Server 的 sys.executable> -m app.overlay.main
+```
+
+Launcher 不接受任意 command/path/module 參數，使用 `shell=False`，並只追蹤自己啟動的 Overlay process；Overlay 已執行時不會重複開第二個。
+
+Web UI **只負責開啟原生視窗**，不會自動選裝置、不會自動啟動 System Audio Job，也不會自動開始 Whisper。音訊裝置與「開始桌面字幕 / 停止」仍在原生 Overlay 控制視窗操作。
+
+也可在另一個已啟用相同虛擬環境的 PowerShell 手動啟動：
+
+```powershell
+python -m app.overlay.main
+```
+
+或：
+
+```powershell
+.\scripts\start_overlay.ps1
+```
+
+原生控制視窗可選擇 System Audio 裝置、開始與停止字幕，並調整字幕位置、字型、背景透明度、顯示行數與永遠置頂。Backend 未執行時會顯示 `Backend 未啟動` 並停用 Start。
 
 ---
 
@@ -1226,6 +1293,36 @@ Speaker 1：...
 - 同一影片可同時保留原始 transcript 與 speaker-aware transcript。
 - System Audio / Microphone 本階段不支援。
 
+## 11.11 Windows 原生桌面字幕 Overlay
+
+在 `來源 → 電腦播放聲音` 可看到：
+
+```text
+[ 開啟桌面字幕 Overlay ]
+```
+
+Web launcher 狀態：
+
+```text
+可啟動        → 開啟桌面字幕 Overlay
+Overlay 執行中 → Overlay 已開啟
+不可使用      → Overlay 無法使用
+```
+
+原生控制視窗提供：
+
+- System Audio 裝置選擇
+- 開始桌面字幕 / 停止
+- 顯示 / 隱藏
+- Top / Bottom / Custom
+- 18–72 px 字體大小
+- 20–95% 背景透明度
+- 1–4 個最新字幕 segments
+- Always-on-top
+- Custom 模式拖曳
+
+字幕來源是現有 `GET /api/jobs/{job_id}` 的 `segments`；重複 polling 不會重複顯示相同 segment。Web launcher 不會自己建立 System Audio Job。
+
 ---
 
 <a id="section-12"></a>
@@ -1457,6 +1554,8 @@ http://127.0.0.1:8000/docs
 | POST | `/api/jobs/system-audio` | 建立 system-audio Live Job |
 | GET | `/api/microphone/devices` | 列出 microphone input devices |
 | POST | `/api/jobs/microphone` | 建立 microphone Live Job |
+| GET | `/api/overlay/status` | 查詢 Native Overlay 是否可用 / 是否由 backend launcher 執行中 |
+| POST | `/api/overlay/start` | localhost-only 啟動 Native Overlay；固定 `sys.executable -m app.overlay.main` |
 | GET | `/api/jobs/{job_id}` | Job status / partial transcript / elapsed |
 | POST | `/api/jobs/{job_id}/stop` | Cooperative STOP |
 
@@ -1540,6 +1639,22 @@ curl "http://127.0.0.1:8000/api/system-audio/devices"
 ```bash
 curl "http://127.0.0.1:8000/api/microphone/devices"
 ```
+
+## 20.7 Desktop Overlay Launcher
+
+查詢狀態：
+
+```bash
+curl "http://127.0.0.1:8000/api/overlay/status"
+```
+
+啟動：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/overlay/start"
+```
+
+> Launcher 僅允許 loopback client，Web UI 的 cross-origin launch request 也會被拒絕；endpoint 不接受任意命令參數。
 
 ---
 
@@ -1815,6 +1930,23 @@ pyannote/speaker-diarization-community-1
 
 如果 `enable_diarization=false`，即使 pyannote/HF access 有問題，也不應破壞一般字幕與 Whisper 路徑。
 
+## 26.11 桌面 Overlay 無法啟動
+
+先確認：
+
+1. Uvicorn 正在 `127.0.0.1:8000` 執行。
+2. 已安裝 `requirements-overlay.txt`。
+3. `GET /api/overlay/status` 回傳 Overlay available。
+4. Web UI 是由本機 loopback 存取，不是遠端 client。
+
+也可直接測試：
+
+```powershell
+python -m app.overlay.main
+```
+
+Web launcher 只允許固定本機 Overlay module，不會執行任意外部 command。
+
 ---
 
 <a id="section-27"></a>
@@ -1834,6 +1966,7 @@ Tiger-You-VTT/
 │  │  ├─ system_audio.py
 │  │  ├─ microphone.py
 │  │  ├─ jobs.py
+│  │  ├─ overlay.py
 │  │  └─ ui.py
 │  │
 │  ├─ schemas/
@@ -1857,16 +1990,29 @@ Tiger-You-VTT/
 │  │  ├─ transcript.py
 │  │  ├─ media_range.py
 │  │  ├─ diarization.py
+│  │  ├─ overlay_launcher.py
 │  │  ├─ jobs.py
 │  │  └─ errors.py
+│  │
+│  ├─ overlay/
+│  │  ├─ __init__.py
+│  │  ├─ main.py
+│  │  ├─ api_client.py
+│  │  ├─ caption_state.py
+│  │  ├─ overlay_window.py
+│  │  ├─ control_window.py
+│  │  └─ settings.py
 │  │
 │  └─ static/
 │     └─ index.html
 │
+├─ scripts/
+│  └─ start_overlay.ps1
 ├─ tests/
 ├─ pics/
 ├─ requirements.txt
 ├─ requirements-dev.txt
+├─ requirements-overlay.txt
 ├─ LICENSE
 └─ README.md
 ```
@@ -1884,9 +2030,15 @@ python -m pytest -q
 目前最新開發 working tree 已驗證：
 
 ```text
-352 passed
+409 passed
 0 failed
 0 skipped
+```
+
+Overlay / Web launcher focused coverage：
+
+```text
+57 passed
 ```
 
 另有：
@@ -1928,6 +2080,9 @@ python -m pytest -q
 - Speaker overlap alignment / label normalization
 - speaker TXT / VTT / SRT serializers
 - Real 2-speaker pyannote runtime gate
+- Native Overlay API client / caption state / PySide6 window
+- Web Overlay launcher localhost/security/process ownership
+- Web UI Overlay launcher states
 - UI
 
 ---
@@ -1938,7 +2093,7 @@ python -m pytest -q
 目前已推送的 GitHub `main` baseline：
 
 ```text
-a96cee14b59ad879e6f95f4ea61eb1f7373ed997
+fbd0406d551544d0f4315bcbac2795af1f2e3a58
 ```
 
 最近的重要 commits：
@@ -1947,11 +2102,10 @@ a96cee14b59ad879e6f95f4ea61eb1f7373ed997
 3f16fc1b... feat: add reliable YouTube search and microphone workflows
 7fd8b324... fix: make system audio capture continuous
 a96cee14... Revert "fix: make system audio capture continuous"
+fbd0406d... feat: add optional speaker diarization
 ```
 
-目前 **Speaker Diarization** 仍位於 working tree，尚未 commit/push；已完成 352-test regression、真實 2-speaker runtime gate 與使用者人工 UI 驗收。
-
-因此 README 中的 Speaker Diarization 描述可能暫時領先遠端 `main`。
+目前 **Speaker Diarization 已提交至 main**。較新的 **Windows Native Desktop Overlay + Web UI launcher** 仍位於 working tree，尚未 commit/push。Overlay 自身的真實 System Audio 字幕顯示已驗證；Web UI launcher 的啟動、重複啟動防護、關閉後重開均已真實驗證，但「由 Web 啟動的 Overlay 再完成真實字幕顯示」仍待使用者人工 gate。
 
 ---
 
@@ -1963,6 +2117,9 @@ a96cee14... Revert "fix: make system audio capture continuous"
 - Hugging Face 只用於 gated model access / 首次模型下載；raw token 不應進入 source、README 或 Git
 - Speaker label 僅為同一媒體內的 `Speaker 1 / Speaker 2...`，不做真人身份辨識
 - System Audio capture 在本機
+- Native Desktop Overlay 只透過本機 FastAPI API 讀取字幕，不直接開第二套 WASAPI
+- Web Overlay launcher 僅允許 loopback client / same-origin launch，固定執行 `sys.executable -m app.overlay.main`，`shell=False`
+- Backend 只追蹤自己啟動的 Overlay process，不終止其他 Python/PySide 程序
 - Microphone capture 在本機
 - 不使用雲端 ASR API
 - 不使用 Qwen / OpenAI / Ollama / LangChain 做字幕分析
@@ -2001,6 +2158,8 @@ a96cee14... Revert "fix: make system audio capture continuous"
 18. Speaker Diarization 預設使用 CPU，處理時間可能遠高於單純字幕/Whisper。
 19. `Speaker 1 / Speaker 2` 是聲音群組，不代表真人身份；多人重疊、短發言或音質差仍可能影響 speaker count / assignment。
 20. `community-1` 為 gated Hugging Face model，首次使用需接受 access conditions 並登入。
+21. Native Overlay 目前使用 polling，不是 WebSocket/SSE；Overlay rendering 延遲很小，但整體 live caption latency 仍主要受 10 秒 System Audio chunk、模型 warm-up 與 Whisper inference 影響。
+22. Web UI → Native Overlay launcher 已通過啟動/防重複/關閉重開真實驗證；由 Web 啟動後再完成真實字幕顯示的 acceptance 仍待人工確認。
 
 ---
 
@@ -2036,13 +2195,14 @@ a96cee14... Revert "fix: make system audio capture continuous"
    - 上傳語音檔
    - 電腦播放聲音
    - 麥克風錄音
-3. 有限媒體確認 H:M
-4. YouTube URL / 影片 / 語音檔若需要多人分離，可勾選「啟用說話者分離」
-5. Live source 選擇正確 device
-6. 按「開始取得字幕」
-7. 觀察 status / elapsed / partial transcript；若啟用 diarization，完成後查看 speaker-aware output
-8. 必要時按 STOP
-9. 下載/使用原始 TXT / VTT / SRT；speaker-aware output 另行保留
+3. 若使用電腦播放聲音，可直接按「開啟桌面字幕 Overlay」啟動原生視窗
+4. 有限媒體確認 H:M
+5. YouTube URL / 影片 / 語音檔若需要多人分離，可勾選「啟用說話者分離」
+6. Live source 選擇正確 device
+7. 按「開始取得字幕」；若使用 Native Overlay，Start/STOP 在原生控制視窗操作
+8. 觀察 status / elapsed / partial transcript；若啟用 diarization，完成後查看 speaker-aware output
+9. 必要時按 STOP
+10. 下載/使用原始 TXT / VTT / SRT；speaker-aware output 另行保留
 ```
 
 ---
@@ -2053,10 +2213,12 @@ a96cee14... Revert "fix: make system audio capture continuous"
 目前最新 working tree：
 
 ```text
-352 passed
+409 passed
 0 failed
 0 skipped
 ```
+
+Overlay/Web launcher focused：`57 passed`。
 
 已完成實機驗證的重點包括：
 
@@ -2078,7 +2240,11 @@ a96cee14... Revert "fix: make system audio capture continuous"
 - 真實 105.241 秒兩人 YouTube 媒體：`Speaker 1` / `Speaker 2`
 - YouTube Search per-video speaker panel
 - Diarization OFF regression
-- 使用者人工 UI 驗收：效果確認良好
+- 使用者人工 UI 驗收：Speaker Diarization 效果確認良好
+- Native Desktop Overlay：真實 WASAPI / Windows SpeechSynthesizer / Chrome always-on-top 驗證 PASS
+- Native Overlay 真實第一次 backend transcript 約 43.156 s；第一次可見字幕約 44.344 s；Overlay polling 額外延遲約 0.2–1.2 s
+- Web UI Overlay launcher：真實啟動、already_running 防重複、關閉後重新啟動 PASS
+- Web-launched Overlay 真實字幕 gate：Codex Windows computer-use helper 失敗，仍待使用者人工確認
 
 
 Speaker Diarization 效能觀察（同類短媒體）：
@@ -2103,6 +2269,14 @@ Microphone real device / PCM / transcription
 ```text
 Windows / PyAudioWPatch 沒有暴露 usable microphone input device
 ```
+
+目前另一個人工 acceptance gate：
+
+```text
+Web UI → 開啟桌面字幕 Overlay → Native Overlay → Real System Audio caption
+```
+
+Launcher 與 Native Overlay 本身均已通過自動化與多項 real runtime gate；最後這條 Web-launched caption 路徑因 Codex Windows UI helper 無法完成原生互動，仍待使用者本人確認。
 
 ---
 
