@@ -150,6 +150,27 @@ Windows 聲音
 
 Web UI 在 `來源 → 電腦播放聲音` 提供 **開啟桌面字幕 Overlay**。Web 端只負責啟動原生 Overlay；真正的音訊裝置選擇、開始/停止字幕仍在原生控制視窗操作。Overlay 不自行開 WASAPI、不建立第二套 Whisper。
 
+### 可選低延遲即時字幕（預設 OFF）
+
+Web UI 的 `來源 → 電腦播放聲音` 與原生 Overlay 控制視窗提供「低延遲即時字幕」。
+只有 System Audio 可用；不套用至 YouTube、上傳影片/音訊、麥克風或說話者分離。
+未勾選時仍使用原有 10 秒 System Audio 流程。
+
+- API：`POST /api/jobs/system-audio`，新增 `low_latency: true`；省略或 `false` 保持原流程。
+- 使用本機已快取的 `large-v3-turbo`、CUDA / `int8_float32`、4 秒視窗，**overlap = 0**。
+- 啟動先顯示「準備低延遲模型...」：lazy-load、VAD 初始化、兩次真正的暖機推論完成後才開啟 WASAPI，接著顯示「低延遲字幕收音中」。準備期間不擷取音訊。
+- 連續 capture 與單一 Whisper consumer 分離；FIFO 最多 3 個視窗。超載會明確回報 `low_latency_overrun` 並保留完成的字幕，不會宣稱音訊遺失後仍成功。
+- STOP 關閉 capture、讓正在處理的推論安全完成，不繼續處理佇列積壓；尚未處理的視窗/部分 PCM 另行計數。靜音時也可停止。
+- Turbo 僅在使用時載入並快取；與有限媒體 Whisper 共用推論所有權，切換模型時釋放前一個昂貴模型。低延遲無法準備時仍可改用一般模式。
+
+2026-10-05 GTX 1070 8 GB / Realtek Loopback 實測：冷啟動準備約 9.3 秒，
+**開始 capture 後**第一筆 API 可觀察字幕約 5.8 秒，後續字幕相對 segment 結尾約落後 1.8–4.3 秒。
+61.95 秒 PCM 測試回收 10/10 markers，overflow / dropped frames / dropped windows 均為 0。
+這是受控語音的 backend 測量，不保證零延遲；GPU 負載、語音密度與視窗邊界會影響結果。
+0.5 秒 overlap 的有限試驗未通過 queue/吞吐門檻，因此未啟用 overlap/dedup。
+Web UI / Native Overlay 的本次視覺端到端人工驗收仍待完成；Overlay polling 維持 500 ms。
+Windows 可能重新編號裝置，請重新整理並依 Realtek Loopback 名稱選擇，不要固定依賴 device ID。
+
 ---
 
 <a id="youtube-search"></a>

@@ -104,9 +104,12 @@ class OverlayApiClient:
                 "Tiger-You-VTT backend returned an invalid device list.",
             ) from exc
 
-    def start_system_audio_job(self, device_id: int) -> dict[str, Any]:
+    def start_system_audio_job(self, device_id: int, low_latency: bool = False) -> dict[str, Any]:
+        request = {"device_id": device_id}
+        if low_latency:
+            request["low_latency"] = True
         payload = self._request(
-            "POST", "/api/jobs/system-audio", json={"device_id": device_id}
+            "POST", "/api/jobs/system-audio", json=request
         )
         if not isinstance(payload, dict) or not isinstance(
             payload.get("job_id"), str
@@ -149,13 +152,14 @@ class OwnedSystemAudioJob:
     def active(self) -> bool:
         return self.job_id is not None and self.status not in TERMINAL_JOB_STATES
 
-    def start(self, device_id: int) -> dict[str, Any]:
+    def start(self, device_id: int, low_latency: bool = False) -> dict[str, Any]:
         if self.active:
             raise OverlayApiError(
                 "overlay_job_active",
                 "A desktop caption job is already active.",
             )
-        payload = self.client.start_system_audio_job(device_id)
+        payload = (self.client.start_system_audio_job(device_id, low_latency=True)
+                   if low_latency else self.client.start_system_audio_job(device_id))
         self.job_id = str(payload["job_id"])
         self.status = str(payload.get("status", "queued"))
         return payload

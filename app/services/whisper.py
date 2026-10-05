@@ -132,6 +132,13 @@ class WhisperTranscriber:
     def loaded(self) -> bool:
         return self._model is not None
 
+    def release(self) -> None:
+        """Called only under the shared runtime lease, with no active decode."""
+        with self._lock:
+            self._model = None
+            self._device = None
+            self._compute_type = None
+
     def _compute_for(self, device: str) -> str:
         if self.settings.compute_type != "auto":
             return self.settings.compute_type
@@ -411,10 +418,13 @@ def transcribe_audio(
     retry_without_vad: bool = True,
     allow_empty: bool = False,
 ) -> TranscriptionResult:
-    return TRANSCRIBER.transcribe(
-        audio_path,
-        on_segment,
-        should_stop,
-        retry_without_vad=retry_without_vad,
-        allow_empty=allow_empty,
-    )
+    from app.services.inference_runtime import inference_session
+
+    with inference_session("whisper", TRANSCRIBER.release):
+        return TRANSCRIBER.transcribe(
+            audio_path,
+            on_segment,
+            should_stop,
+            retry_without_vad=retry_without_vad,
+            allow_empty=allow_empty,
+        )

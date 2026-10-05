@@ -21,3 +21,4 @@ class SystemAudioJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_id: int | None = Field(default=None, ge=0)
+    low_latency: bool = False

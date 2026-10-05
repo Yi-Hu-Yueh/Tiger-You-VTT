@@ -72,6 +72,10 @@ class OverlayControlWindow(QMainWindow):
         self.status_label.setObjectName("backendStatusLabel")
         self.device_combo = QComboBox()
         self.device_combo.setObjectName("deviceCombo")
+        self.low_latency_check = QCheckBox("低延遲即時字幕")
+        self.low_latency_check.setObjectName("lowLatencyCheck")
+        self.low_latency_check.setChecked(False)
+        self.low_latency_check.setToolTip("縮短桌面字幕延遲；啟動前需準備模型，並可能增加 GPU 使用率。")
         self.start_button = QPushButton("開始桌面字幕")
         self.start_button.setObjectName("startButton")
         self.start_button.setEnabled(False)
@@ -113,6 +117,7 @@ class OverlayControlWindow(QMainWindow):
         form = QFormLayout()
         form.addRow("Backend", self.status_label)
         form.addRow("系統音訊裝置", self.device_combo)
+        form.addRow("", self.low_latency_check)
         form.addRow("字幕位置", self.position_combo)
         form.addRow("字型大小", self.font_spin)
         form.addRow("背景透明度", self.opacity_spin)
@@ -188,9 +193,10 @@ class OverlayControlWindow(QMainWindow):
         if device_id is None:
             return
         self.start_button.setEnabled(False)
-        self.status_label.setText("啟動中...")
+        low_latency = self.low_latency_check.isChecked()
+        self.status_label.setText("準備低延遲模型..." if low_latency else "啟動中...")
         self._run_task(
-            lambda: self.job.start(int(device_id)),
+            lambda: self.job.start(int(device_id), low_latency=True) if low_latency else self.job.start(int(device_id)),
             self._job_started,
             self._operation_error,
         )
@@ -230,7 +236,10 @@ class OverlayControlWindow(QMainWindow):
             )
             self.status_label.setText(status_text)
         else:
-            self.status_label.setText(f"轉錄狀態：{status}")
+            result = payload.get("result") or {}
+            phases = {"preparing_model": "準備低延遲模型...", "capturing": "低延遲字幕收音中", "stopping": "停止中..."}
+            phase = phases.get(result.get("live_phase")) if result.get("low_latency") else None
+            self.status_label.setText(phase if phase and self.job.active else f"轉錄狀態：{status}")
         if not self.job.active:
             self.poll_timer.stop()
             self.stop_button.setEnabled(False)

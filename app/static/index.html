@@ -103,6 +103,8 @@
           <select id="systemAudioDevice"></select>
         </label>
         <button id="refreshSystemAudioDevices" type="button">重新整理裝置</button>
+        <label><input id="systemAudioLowLatency" type="checkbox"> 低延遲即時字幕</label>
+        <p class="note">縮短桌面字幕延遲；啟動前需準備模型，並可能增加 GPU 使用率。</p>
         <div id="overlayLauncherControls">
           <p><strong>桌面字幕 Overlay</strong></p>
           <button id="openOverlayButton" type="button">開啟桌面字幕 Overlay</button>
@@ -196,6 +198,7 @@
   const audioFile = document.querySelector("#audioFile");
   const systemAudioControls = document.querySelector("#systemAudioControls");
   const systemAudioDevice = document.querySelector("#systemAudioDevice");
+  const systemAudioLowLatency = document.querySelector("#systemAudioLowLatency");
   const refreshSystemAudioDevices = document.querySelector("#refreshSystemAudioDevices");
   const openOverlayButton = document.querySelector("#openOverlayButton");
   const overlayLauncherStatus = document.querySelector("#overlayLauncherStatus");
@@ -777,6 +780,10 @@
     elapsedTime.textContent = formatElapsedTime(job.elapsed_seconds);
     const result = job.result;
     transcriptText.value = job.txt;
+    if (["queued", "running", "stopping"].includes(job.status) && result?.low_latency) {
+      const phases = { preparing_model: "準備低延遲模型...", capturing: "低延遲字幕收音中", stopping: "停止中..." };
+      statusText.textContent = phases[result.live_phase] || job.status;
+    }
     if (result?.diarization_status === "completed") {
       transcriptText.value = result.speaker_txt || job.txt;
     }
@@ -832,7 +839,7 @@
       response = await fetch("/api/jobs/system-audio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: Number(systemAudioDevice.value) })
+        body: JSON.stringify({ device_id: Number(systemAudioDevice.value), low_latency: systemAudioLowLatency.checked })
       });
     } else if (mode === "microphone") {
       if (!microphoneDevice.value) {

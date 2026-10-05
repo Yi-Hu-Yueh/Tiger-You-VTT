@@ -68,6 +68,8 @@ class _JobRecord:
     end_time_is_default: bool = False
     enable_diarization: bool = False
     device_id: int | None = None
+    low_latency: bool = False
+    live_metadata: dict[str, Any] = field(default_factory=dict)
     range_start: float | None = None
     range_end: float | None = None
     media_path: Path | None = None
@@ -164,12 +166,18 @@ class JobManager:
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
 
-    def create_system_audio_job(self, device_id: int) -> dict[str, str]:
+    def create_system_audio_job(self, device_id: int, low_latency: bool = False) -> dict[str, str]:
+        metadata = {}
+        if low_latency:
+            from app.services.low_latency_audio import initial_metrics
+            metadata = initial_metrics()
         record = _JobRecord(
             job_id=uuid4().hex,
             source_type="system_audio",
             created_at=self._clock(),
             device_id=device_id,
+            low_latency=low_latency,
+            live_metadata=metadata,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -219,7 +227,7 @@ class JobManager:
                 ),
                 "range_start": record.range_start,
                 "range_end": record.range_end,
-                "result": deepcopy(record.result),
+                "result": self._partial_result(record) if record.low_latency and record.result is None else deepcopy(record.result),
                 "error": deepcopy(record.error),
             }
 
@@ -238,6 +246,8 @@ class JobManager:
                 record.status = "stopping"
             elif record.status == "stopping":
                 record.stop_requested.set()
+            if record.low_latency and record.stop_requested.is_set():
+                record.live_metadata["live_phase"] = "stopping"
 
         if cleanup:
             self._cleanup_upload(job_id)
@@ -296,6 +306,7 @@ class JobManager:
     @staticmethod
     def _partial_result(record: _JobRecord) -> dict[str, Any]:
         return {
+            **record.live_metadata,
             "segment_count": len(record.segments),
             "segments": deepcopy(record.segments),
             "txt": record.txt,
@@ -339,13 +350,18 @@ class JobManager:
                 end_time_is_default = record.end_time_is_default
                 enable_diarization = record.enable_diarization
                 device_id = record.device_id
+                low_latency = record.low_latency
 
             if source_type == "system_audio":
                 if device_id is None:
                     raise RuntimeError(
                         "System-audio job is missing its output device"
                     )
-                result = self._run_system_audio_capture(job_id, device_id)
+                result = (
+                    self._run_low_latency_capture(job_id, device_id)
+                    if low_latency
+                    else self._run_system_audio_capture(job_id, device_id)
+                )
             elif source_type == "microphone":
                 if device_id is None:
                     raise RuntimeError(
@@ -456,6 +472,24 @@ class JobManager:
             )
         finally:
             self._cleanup_upload(job_id)
+
+    def _run_low_latency_capture(self, job_id: str, device_id: int) -> dict[str, Any]:
+        from app.services.low_latency_audio import run_low_latency
+
+        with self._lock:
+            stop = self._record(job_id).stop_requested
+
+        def publish(metrics):
+            with self._lock:
+                record = self._record(job_id)
+                record.live_metadata.update(metrics)
+                if record.stop_requested.is_set():
+                    record.live_metadata["live_phase"] = "stopping"
+
+        metrics = run_low_latency(device_id, stop,
+                                 lambda segment: self._on_system_audio_segment(job_id, segment), publish)
+        with self._lock:
+            return {**metrics, **self._partial_result(self._record(job_id)), "_stopped": True}
 
     def _run_system_audio_capture(
         self, job_id: str, device_id: int

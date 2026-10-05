@@ -130,7 +130,11 @@ def create_system_audio_job(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
-    started = JOB_MANAGER.create_system_audio_job(device.id)
+    started = (
+        JOB_MANAGER.create_system_audio_job(device.id, low_latency=True)
+        if request.low_latency
+        else JOB_MANAGER.create_system_audio_job(device.id)
+    )
     return JobStartResponse.model_validate(started)
 
 

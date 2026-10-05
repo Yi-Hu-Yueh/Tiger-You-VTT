@@ -94,7 +94,23 @@ def _decode_waveform(audio_path: Path) -> dict[str, Any]:
     return {"waveform": waveform, "sample_rate": _DIARIZATION_SAMPLE_RATE}
 
 
+def _release_pipeline() -> None:
+    global _pipeline
+    with _pipeline_lock:
+        _pipeline = None
+
+
 def diarize_audio(audio_path: Path) -> tuple[list[SpeakerRegion], float]:
+    from app.services.inference_runtime import INFERENCE_LOCK, inference_session
+
+    if DIARIZATION_SETTINGS.device != "cuda":
+        with INFERENCE_LOCK:
+            return _diarize_audio(audio_path)
+    with inference_session("diarization", _release_pipeline):
+        return _diarize_audio(audio_path)
+
+
+def _diarize_audio(audio_path: Path) -> tuple[list[SpeakerRegion], float]:
     pipeline = _load_pipeline()
     started_at = monotonic()
     try:
