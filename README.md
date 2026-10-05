@@ -1,7 +1,7 @@
 # Tiger-You-VTT
 
 > YouTube 搜尋 / YouTube URL / 本機影片 / 語音檔 / Windows 系統音訊 / 麥克風的字幕擷取與語音轉文字工具  
-> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback、可選 **Speaker Diarization**，以及 Windows **原生桌面字幕 Overlay**。
+> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback、可選 **Speaker Diarization**、Windows **原生桌面字幕 Overlay**，以及可選 **Low-Latency Live ASR（低延遲即時字幕）**。
 
 chatgpt: https://chatgpt.com/share/6ac07112-ac1c-83ee-910d-5a7d1d747d79
 
@@ -29,6 +29,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 - [🔎 YouTube 搜尋](#youtube-search)
 - [🗣️ Speaker Diarization](#speaker-diarization)
 - [🪟 Windows 桌面字幕 Overlay](#desktop-overlay)
+- [⚡ 低延遲即時字幕](#low-latency-live-asr)
 - [🖥️ UI 操作說明](#section-11)
 - [🔌 API](#section-19)
 - [🧪 執行測試](#section-28)
@@ -43,6 +44,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
    - YouTube URL / 本機影片 / 語音檔 / System Audio / Microphone
    - [Speaker Diarization](#speaker-diarization)
    - [Windows 桌面字幕 Overlay](#desktop-overlay)
+   - [低延遲即時字幕](#low-latency-live-asr)
 2. [主要功能](#section-2)
 3. [License](#section-3)
 
@@ -150,26 +152,40 @@ Windows 聲音
 
 Web UI 在 `來源 → 電腦播放聲音` 提供 **開啟桌面字幕 Overlay**。Web 端只負責啟動原生 Overlay；真正的音訊裝置選擇、開始/停止字幕仍在原生控制視窗操作。Overlay 不自行開 WASAPI、不建立第二套 Whisper。
 
+<a id="low-latency-live-asr"></a>
 ### 可選低延遲即時字幕（預設 OFF）
 
-Web UI 的 `來源 → 電腦播放聲音` 與原生 Overlay 控制視窗提供「低延遲即時字幕」。
-只有 System Audio 可用；不套用至 YouTube、上傳影片/音訊、麥克風或說話者分離。
-未勾選時仍使用原有 10 秒 System Audio 流程。
+Web UI 的 `來源 → 電腦播放聲音` 與原生 Overlay 控制視窗提供「**低延遲即時字幕**」。
+只有 System Audio 可用；不套用至 YouTube、上傳影片/音訊、麥克風或 Speaker Diarization。未勾選時仍使用原有 **10 秒 System Audio / large-v3** 流程。
 
-- API：`POST /api/jobs/system-audio`，新增 `low_latency: true`；省略或 `false` 保持原流程。
-- 使用本機已快取的 `large-v3-turbo`、CUDA / `int8_float32`、4 秒視窗，**overlap = 0**。
-- 啟動先顯示「準備低延遲模型...」：lazy-load、VAD 初始化、兩次真正的暖機推論完成後才開啟 WASAPI，接著顯示「低延遲字幕收音中」。準備期間不擷取音訊。
-- 連續 capture 與單一 Whisper consumer 分離；FIFO 最多 3 個視窗。超載會明確回報 `low_latency_overrun` 並保留完成的字幕，不會宣稱音訊遺失後仍成功。
-- STOP 關閉 capture、讓正在處理的推論安全完成，不繼續處理佇列積壓；尚未處理的視窗/部分 PCM 另行計數。靜音時也可停止。
-- Turbo 僅在使用時載入並快取；與有限媒體 Whisper 共用推論所有權，切換模型時釋放前一個昂貴模型。低延遲無法準備時仍可改用一般模式。
+- API：`POST /api/jobs/system-audio` 新增 `low_latency: true`；省略或 `false` 完整保持舊流程。
+- 低延遲模式使用本機已快取的 `large-v3-turbo`、CUDA / `int8_float32`、**4 秒視窗**，production **overlap = 0**。
+- 啟動先顯示「準備低延遲模型...」：lazy-load、VAD 初始化與兩次暖機推論完成後才開啟 WASAPI；準備期間 **0 frames** 使用者音訊被擷取。
+- Capture producer 與單一 Whisper consumer 分離，FIFO 上限 **3 個視窗**；超載回 `low_latency_overrun`，不會靜默丟音訊後仍回報成功。
+- STOP 會先關 capture，再讓目前 inference 安全完成；不繼續 drain backlog。靜音時也能快速停止。
+- 低延遲與有限媒體 Whisper 共用 inference ownership；切換昂貴 runtime 時釋放前一個 model，避免不必要 VRAM 壓力。
+- Windows 可能重新編號音訊裝置，請以 **Realtek ... [Loopback] 名稱**選擇，不要固定依賴 device ID。
 
-2026-10-05 GTX 1070 8 GB / Realtek Loopback 實測：冷啟動準備約 9.3 秒，
-**開始 capture 後**第一筆 API 可觀察字幕約 5.8 秒，後續字幕相對 segment 結尾約落後 1.8–4.3 秒。
-61.95 秒 PCM 測試回收 10/10 markers，overflow / dropped frames / dropped windows 均為 0。
-這是受控語音的 backend 測量，不保證零延遲；GPU 負載、語音密度與視窗邊界會影響結果。
-0.5 秒 overlap 的有限試驗未通過 queue/吞吐門檻，因此未啟用 overlap/dedup。
-Web UI / Native Overlay 的本次視覺端到端人工驗收仍待完成；Overlay polling 維持 500 ms。
-Windows 可能重新編號裝置，請重新整理並依 Realtek Loopback 名稱選擇，不要固定依賴 device ID。
+2026-10-05 GTX 1070 8 GB / Realtek Loopback 實測：
+
+```text
+準備時間                     9.297 s
+Capture 後首筆 API 字幕      約 5.8 s
+後續字幕 lag                 1.828–4.324 s（mean 2.847 s）
+PCM captured                 61.95 s
+Full windows                 15 captured / 15 processed
+Max queue depth              1
+Overflow                     0
+Dropped frames/windows       0 / 0
+Marker recovery              10 / 10
+Mean inference RTF           0.350
+Normal STOP                  0.110 s
+Silent STOP                  0.125 s
+```
+
+這是受控語音 backend 測量，不代表零延遲。GPU 負載、語音密度、VAD 與 4 秒視窗邊界仍會影響字幕體感。0.5 秒 overlap 的有限試驗未通過 queue/吞吐門檻，因此 production 維持 `overlap = 0`。
+
+**使用者人工 UI 驗收已 PASS**：Web UI 勾選低延遲後以 Realtek Loopback 執行約 `00:01:57`，取得 **38 個字幕片段**，最終 `stopped` 且 STOP 後字幕保留。Native Overlay 原有 real WASAPI / always-on-top / STOP 能力維持可用。
 
 ---
 
@@ -561,6 +577,12 @@ TXT segment 使用英文半形逗號 `,` 串接：
 - ✅ Overlay 只重用既有 FastAPI System Audio Job，不直接開 WASAPI
 - ✅ localhost-only Overlay launcher；固定 `sys.executable -m app.overlay.main`、`shell=False`
 - ✅ 防止重複啟動同一 backend-owned Overlay process
+- ✅ 可選 Low-Latency Live ASR（System Audio only，預設 OFF）
+- ✅ `large-v3-turbo` / CUDA `int8_float32` / 4 秒 live windows
+- ✅ 模型 pre-warm 完成後才開始 WASAPI capture
+- ✅ Continuous capture producer + bounded FIFO(3) + single Whisper consumer
+- ✅ `low_latency_overrun` 明確超載保護，不靜默丟棄音訊
+- ✅ 低延遲 STOP / silent STOP / capture-time timestamp / runtime metrics
 - ✅ 可選 Speaker Diarization（預設 OFF）
 - ✅ Speaker 1 / Speaker 2 / Speaker 3… 自動說話者分群
 - ✅ speaker-aware TXT / VTT / SRT
@@ -1272,6 +1294,21 @@ faster-whisper
 
 這是 mixed output audio，不是單一 application capture。
 
+低延遲模式：
+
+```text
+[ ] 低延遲即時字幕   ← 預設 OFF
+[x] 低延遲即時字幕
+    ↓
+準備低延遲模型...
+    ↓
+低延遲字幕收音中
+    ↓
+4 秒 windows → bounded FIFO(3) → large-v3-turbo
+```
+
+一般模式仍維持 10 秒 chunk / `large-v3`；低延遲模式不會改變其他來源。
+
 ---
 
 ## 11.9 麥克風錄音
@@ -1442,11 +1479,23 @@ running
 <a id="section-16"></a>
 # 16. Live Audio Chunk
 
-System Audio 預設：
+System Audio 一般模式：
 
 ```text
 SYSTEM_AUDIO_CHUNK_SECONDS = 10
+large-v3
 ```
+
+System Audio 低延遲模式：
+
+```text
+model          = large-v3-turbo
+window         = 4.0 s
+queue capacity = 3 windows
+overlap        = 0
+```
+
+低延遲模式會先 warm-up，完成後才開始 capture；producer 連續收音，consumer 單序處理 windows。
 
 Microphone：
 
@@ -1572,7 +1621,7 @@ http://127.0.0.1:8000/docs
 | POST | `/api/jobs/video` | 建立 Video Background Job |
 | POST | `/api/jobs/audio` | 建立 Audio Background Job |
 | GET | `/api/system-audio/devices` | 列出 WASAPI Loopback devices |
-| POST | `/api/jobs/system-audio` | 建立 system-audio Live Job |
+| POST | `/api/jobs/system-audio` | 建立 system-audio Live Job；可選 `low_latency=false` |
 | GET | `/api/microphone/devices` | 列出 microphone input devices |
 | POST | `/api/jobs/microphone` | 建立 microphone Live Job |
 | GET | `/api/overlay/status` | 查詢 Native Overlay 是否可用 / 是否由 backend launcher 執行中 |
@@ -1655,13 +1704,23 @@ curl "http://127.0.0.1:8000/api/system-audio/devices"
 
 ---
 
-## 20.6 Microphone Devices
+## 20.6 Low-Latency System Audio Job
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/jobs/system-audio" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id": 14, "low_latency": true}'
+```
+
+> `device_id` 可能因 Windows 重新枚舉而改變；實際使用前請先呼叫 `/api/system-audio/devices`，依 `[Loopback]` 裝置名稱選擇。
+
+## 20.7 Microphone Devices
 
 ```bash
 curl "http://127.0.0.1:8000/api/microphone/devices"
 ```
 
-## 20.7 Desktop Overlay Launcher
+## 20.8 Desktop Overlay Launcher
 
 查詢狀態：
 
@@ -1706,6 +1765,8 @@ WHISPER_DEVICE
 WHISPER_COMPUTE_TYPE
 WHISPER_CUDA_RUNTIME_DIR
 SYSTEM_AUDIO_CHUNK_SECONDS
+SYSTEM_AUDIO_LOW_LATENCY_WINDOW_SECONDS
+SYSTEM_AUDIO_LOW_LATENCY_QUEUE_MAX_WINDOWS
 MICROPHONE_CHUNK_SECONDS
 ```
 
@@ -1968,6 +2029,15 @@ python -m app.overlay.main
 
 Web launcher 只允許固定本機 Overlay module，不會執行任意外部 command。
 
+## 26.12 低延遲字幕啟動後仍覺得慢
+
+先區分兩個時間：
+
+1. **準備低延遲模型**：冷啟動可能約 9 秒；此期間尚未開始收音。
+2. **Capture 後字幕延遲**：實測第一筆約 5.8 秒，後續常見約 1.8–4.3 秒。
+
+若延遲持續累積，確認沒有 GPU 重負載，並檢查 job metadata 的 queue / overflow / dropped counters。低延遲模式不是零延遲，也不保證每個 4 秒視窗都在相同時間完成。
+
 ---
 
 <a id="section-27"></a>
@@ -2011,6 +2081,9 @@ Tiger-You-VTT/
 │  │  ├─ transcript.py
 │  │  ├─ media_range.py
 │  │  ├─ diarization.py
+│  │  ├─ inference_runtime.py
+│  │  ├─ live_whisper.py
+│  │  ├─ low_latency_audio.py
 │  │  ├─ overlay_launcher.py
 │  │  ├─ jobs.py
 │  │  └─ errors.py
@@ -2051,15 +2124,15 @@ python -m pytest -q
 目前最新開發 working tree 已驗證：
 
 ```text
-409 passed
+438 passed
 0 failed
 0 skipped
 ```
 
-Overlay / Web launcher focused coverage：
+Low-Latency / Overlay / UI focused coverage（最近一次 bounded regression）：
 
 ```text
-57 passed
+68 passed
 ```
 
 另有：
@@ -2104,6 +2177,11 @@ Overlay / Web launcher focused coverage：
 - Native Overlay API client / caption state / PySide6 window
 - Web Overlay launcher localhost/security/process ownership
 - Web UI Overlay launcher states
+- Low-Latency default-OFF routing / pre-warm ordering
+- Continuous producer / single consumer / bounded FIFO
+- Queue overrun / failure cleanup / capture-time timestamps
+- STOP with backlog / STOP during silence
+- Low-Latency Web UI / Native Overlay toggle and responsiveness
 - UI
 
 ---
@@ -2114,7 +2192,7 @@ Overlay / Web launcher focused coverage：
 目前已推送的 GitHub `main` baseline：
 
 ```text
-fbd0406d551544d0f4315bcbac2795af1f2e3a58
+1661923bf0ed29b4ad1061c49a52d76352729545
 ```
 
 最近的重要 commits：
@@ -2124,9 +2202,12 @@ fbd0406d551544d0f4315bcbac2795af1f2e3a58
 7fd8b324... fix: make system audio capture continuous
 a96cee14... Revert "fix: make system audio capture continuous"
 fbd0406d... feat: add optional speaker diarization
+1661923b... feat: add native desktop caption overlay
 ```
 
-目前 **Speaker Diarization 已提交至 main**。較新的 **Windows Native Desktop Overlay + Web UI launcher** 仍位於 working tree，尚未 commit/push。Overlay 自身的真實 System Audio 字幕顯示已驗證；Web UI launcher 的啟動、重複啟動防護、關閉後重開均已真實驗證，但「由 Web 啟動的 Overlay 再完成真實字幕顯示」仍待使用者人工 gate。
+目前 **Speaker Diarization** 與 **Windows Native Desktop Overlay + Web UI launcher** 均已提交至 `main`。
+
+較新的 **Low-Latency Live ASR** 位於 working tree，尚未 commit/push；已完成 438-test regression、真實 65 秒 WASAPI backend gate 與使用者 Web UI 人工驗收。
 
 ---
 
@@ -2138,6 +2219,8 @@ fbd0406d... feat: add optional speaker diarization
 - Hugging Face 只用於 gated model access / 首次模型下載；raw token 不應進入 source、README 或 Git
 - Speaker label 僅為同一媒體內的 `Speaker 1 / Speaker 2...`，不做真人身份辨識
 - System Audio capture 在本機
+- Low-Latency Live ASR 仍完全本機執行；Turbo 模型只在功能啟用時 lazy-load / warm-up
+- Low-Latency queue 為 bounded FIFO，overrun 明確失敗，不將音訊靜默丟棄後宣稱成功
 - Native Desktop Overlay 只透過本機 FastAPI API 讀取字幕，不直接開第二套 WASAPI
 - Web Overlay launcher 僅允許 loopback client / same-origin launch，固定執行 `sys.executable -m app.overlay.main`，`shell=False`
 - Backend 只追蹤自己啟動的 Overlay process，不終止其他 Python/PySide 程序
@@ -2179,8 +2262,10 @@ fbd0406d... feat: add optional speaker diarization
 18. Speaker Diarization 預設使用 CPU，處理時間可能遠高於單純字幕/Whisper。
 19. `Speaker 1 / Speaker 2` 是聲音群組，不代表真人身份；多人重疊、短發言或音質差仍可能影響 speaker count / assignment。
 20. `community-1` 為 gated Hugging Face model，首次使用需接受 access conditions 並登入。
-21. Native Overlay 目前使用 polling，不是 WebSocket/SSE；Overlay rendering 延遲很小，但整體 live caption latency 仍主要受 10 秒 System Audio chunk、模型 warm-up 與 Whisper inference 影響。
-22. Web UI → Native Overlay launcher 已通過啟動/防重複/關閉重開真實驗證；由 Web 啟動後再完成真實字幕顯示的 acceptance 仍待人工確認。
+21. Native Overlay 目前使用 polling，不是 WebSocket/SSE；一般 System Audio 模式仍為 10 秒 chunk。
+22. Low-Latency Live ASR 預設 OFF；啟用後採 4 秒 windows / Turbo，但仍可能受 GPU contention、語音密度與邊界切割影響，不是零延遲。
+23. Low-Latency production overlap = 0；因此 4 秒邊界附近可能出現片語切割或少量字詞替換。
+24. Windows 可能重新編號 WASAPI device ID，應依 `[Loopback]` 名稱選擇。
 
 ---
 
@@ -2219,8 +2304,8 @@ fbd0406d... feat: add optional speaker diarization
 3. 若使用電腦播放聲音，可直接按「開啟桌面字幕 Overlay」啟動原生視窗
 4. 有限媒體確認 H:M
 5. YouTube URL / 影片 / 語音檔若需要多人分離，可勾選「啟用說話者分離」
-6. Live source 選擇正確 device
-7. 按「開始取得字幕」；若使用 Native Overlay，Start/STOP 在原生控制視窗操作
+6. Live source 選擇正確 device；System Audio 若需要低延遲可勾選「低延遲即時字幕」
+7. 按「開始取得字幕」；低延遲模式先顯示「準備低延遲模型...」，完成後才進入收音；若使用 Native Overlay，Start/STOP 在原生控制視窗操作
 8. 觀察 status / elapsed / partial transcript；若啟用 diarization，完成後查看 speaker-aware output
 9. 必要時按 STOP
 10. 下載/使用原始 TXT / VTT / SRT；speaker-aware output 另行保留
@@ -2231,42 +2316,31 @@ fbd0406d... feat: add optional speaker diarization
 <a id="section-33"></a>
 # 33. 最新驗證摘要
 
-目前最新 working tree：
+目前最新 Low-Latency working tree：
 
 ```text
-409 passed
+438 passed
 0 failed
 0 skipped
 ```
 
-Overlay/Web launcher focused：`57 passed`。
+最近一次 focused regression：`68 passed`。另有 1 個既有 pytest cache permission warning。
 
 已完成實機驗證的重點包括：
 
 - GTX 1070 CUDA `int8_float32`
-- YouTube direct URL
-- YouTube Search relevance
-- `Tiger + 最新上傳`
-- unavailable-video candidate skip
-- view-count sorting
-- duration sorting
-- default first-three checkboxes
-- YouTube Search independent Start / Stop
-- sequential selected-video processing
-- tab switching
-- per-selected-video transcript panels
-- WASAPI Loopback PCM capture
-- System Audio transcription / STOP
+- YouTube direct URL / YouTube Search / Video / Audio regressions
 - Speaker Diarization `pyannote.audio 4.0.7` / community-1
-- 真實 105.241 秒兩人 YouTube 媒體：`Speaker 1` / `Speaker 2`
-- YouTube Search per-video speaker panel
-- Diarization OFF regression
-- 使用者人工 UI 驗收：Speaker Diarization 效果確認良好
-- Native Desktop Overlay：真實 WASAPI / Windows SpeechSynthesizer / Chrome always-on-top 驗證 PASS
-- Native Overlay 真實第一次 backend transcript 約 43.156 s；第一次可見字幕約 44.344 s；Overlay polling 額外延遲約 0.2–1.2 s
-- Web UI Overlay launcher：真實啟動、already_running 防重複、關閉後重新啟動 PASS
-- Web-launched Overlay 真實字幕 gate：Codex Windows computer-use helper 失敗，仍待使用者人工確認
-
+- Native Desktop Overlay：真實 WASAPI / Windows SpeechSynthesizer / Chrome always-on-top PASS
+- Web UI Overlay launcher：啟動 / already_running 防重複 / 關閉後重新啟動 PASS
+- Low-Latency Live ASR：`large-v3-turbo`、4 秒 windows、bounded FIFO=3、overlap=0
+- Low-Latency backend 連續實測：約 65 秒 observation / 61.95 秒 PCM
+- 15 captured / 15 processed windows，max queue depth=1
+- overflow=0，dropped frames/windows=0/0
+- marker recovery=10/10，mean inference RTF=0.350
+- capture 後 first API caption 約 5.8 秒，後續 lag 1.828–4.324 秒
+- normal STOP 0.110 秒，silent STOP 0.125 秒
+- 使用者人工 Web UI 驗收：低延遲勾選、Realtek Loopback、約 1:57 執行、38 字幕片段、最終 `stopped` 且字幕保留
 
 Speaker Diarization 效能觀察（同類短媒體）：
 
@@ -2291,13 +2365,7 @@ Microphone real device / PCM / transcription
 Windows / PyAudioWPatch 沒有暴露 usable microphone input device
 ```
 
-目前另一個人工 acceptance gate：
-
-```text
-Web UI → 開啟桌面字幕 Overlay → Native Overlay → Real System Audio caption
-```
-
-Launcher 與 Native Overlay 本身均已通過自動化與多項 real runtime gate；最後這條 Web-launched caption 路徑因 Codex Windows UI helper 無法完成原生互動，仍待使用者本人確認。
+Low-Latency Live ASR 已完成 backend real runtime 與使用者人工 UI acceptance；目前沒有其他 Low-Latency acceptance gate。
 
 ---
 
