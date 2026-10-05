@@ -131,6 +131,7 @@ def test_batch_reuses_youtube_endpoint_and_fixed_default_range() -> None:
     assert "start_time: SEARCH_BATCH_START_TIME" in process
     assert "end_time: SEARCH_BATCH_END_TIME" in process
     assert "end_time_is_default: true" in process
+    assert "enable_diarization: youtubeSearchDiarization.checked" in process
 
 
 def test_batch_is_strictly_sequential_and_failure_does_not_abort_queue() -> None:

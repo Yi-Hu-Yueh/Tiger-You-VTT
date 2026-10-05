@@ -33,6 +33,7 @@ async def create_video_job(
     start_time: str | None = Form(default=None),
     end_time: str | None = Form(default=None),
     end_time_is_default: bool = Form(default=False),
+    enable_diarization: bool = Form(default=False),
 ) -> JobStartResponse:
     temporary_directory: TemporaryDirectory[str] | None = None
     try:
@@ -49,6 +50,7 @@ async def create_video_job(
             start_time,
             end_time,
             end_time_is_default,
+            enable_diarization,
         )
         temporary_directory = None
     except VideoExtractionError as exc:
@@ -70,6 +72,7 @@ async def create_audio_job(
     start_time: str | None = Form(default=None),
     end_time: str | None = Form(default=None),
     end_time_is_default: bool = Form(default=False),
+    enable_diarization: bool = Form(default=False),
 ) -> JobStartResponse:
     temporary_directory: TemporaryDirectory[str] | None = None
     try:
@@ -86,6 +89,7 @@ async def create_audio_job(
             start_time,
             end_time,
             end_time_is_default,
+            enable_diarization,
         )
         temporary_directory = None
     except VideoExtractionError as exc:
@@ -108,6 +112,7 @@ def create_youtube_job(request: YouTubeJobRequest) -> JobStartResponse:
         request.start_time,
         request.end_time,
         request.end_time_is_default,
+        request.enable_diarization,
     )
     return JobStartResponse.model_validate(started)
 

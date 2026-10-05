@@ -3,9 +3,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.transcript import TranscriptSegment
+from app.schemas.diarization import DiarizationFields
 
 
-class UploadAudioTranscriptResponse(BaseModel):
+class UploadAudioTranscriptResponse(DiarizationFields):
     model_config = ConfigDict(extra="forbid")
 
     filename: str

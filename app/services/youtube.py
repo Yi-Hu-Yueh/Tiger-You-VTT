@@ -526,6 +526,7 @@ def _fallback_transcription(
     media_range: ResolvedMediaRange,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    enable_diarization: bool = False,
 ) -> dict[str, Any]:
     from app.services.transcript import (
         transcript_to_srt,
@@ -573,42 +574,99 @@ def _fallback_transcription(
             transcription = _transcribe_audio(
                 transcription_source, ranged_on_segment, should_stop
             )
-
-    segments = (
-        transcription.segments
-        if media_range.is_full
-        else offset_clip_segments(
-            transcription.segments, media_range.start, media_range.end
+        segments = (
+            transcription.segments
+            if media_range.is_full
+            else offset_clip_segments(
+                transcription.segments, media_range.start, media_range.end
+            )
         )
-    )
-    duration = info.get("duration")
-    normalized_duration = (
-        float(duration)
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-        else None
-    )
-    result = {
-        "video_id": _required_text(info, "id", "video ID"),
-        "title": _required_text(info, "title", "title"),
-        "language": transcription.language,
-        "type": "transcribed",
-        "selection_mode": "fallback",
-        "segment_count": len(segments),
-        "duration": normalized_duration,
-        "range_start": media_range.start,
-        "range_end": media_range.end,
-        "segments": segments,
-        "vtt": transcript_to_vtt(segments),
-        "txt": transcript_to_txt(segments),
-        "srt": transcript_to_srt(segments),
-        "transcription_model": transcription.model,
-        "transcription_device": transcription.device,
-        "transcription_compute_type": transcription.compute_type,
-        "transcription_duration": transcription.duration_seconds,
-    }
-    if transcription.stopped:
-        result["_stopped"] = True
+        duration = info.get("duration")
+        normalized_duration = (
+            float(duration)
+            if isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            else None
+        )
+        result = {
+            "video_id": _required_text(info, "id", "video ID"),
+            "title": _required_text(info, "title", "title"),
+            "language": transcription.language,
+            "type": "transcribed",
+            "selection_mode": "fallback",
+            "segment_count": len(segments),
+            "duration": normalized_duration,
+            "range_start": media_range.start,
+            "range_end": media_range.end,
+            "segments": segments,
+            "vtt": transcript_to_vtt(segments),
+            "txt": transcript_to_txt(segments),
+            "srt": transcript_to_srt(segments),
+            "transcription_model": transcription.model,
+            "transcription_device": transcription.device,
+            "transcription_compute_type": transcription.compute_type,
+            "transcription_duration": transcription.duration_seconds,
+        }
+        if transcription.stopped:
+            result["_stopped"] = True
+        if enable_diarization:
+            from app.services.diarization import apply_diarization
+
+            result = apply_diarization(
+                result,
+                transcription_source,
+                timestamp_offset=(
+                    0.0 if media_range.is_full else media_range.start
+                ),
+                should_stop=should_stop,
+            )
     return result
+
+
+def _apply_youtube_diarization(
+    url: str,
+    result: Mapping[str, Any],
+    media_range: ResolvedMediaRange,
+    should_stop: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    from app.services.diarization import (
+        apply_diarization,
+        diarization_failure_result,
+        diarization_stopped_result,
+    )
+
+    if should_stop is not None and should_stop():
+        return diarization_stopped_result(result)
+
+    try:
+        with TemporaryDirectory(
+            prefix="tiger-you-vtt-diarization-"
+        ) as temporary_directory:
+            directory = Path(temporary_directory)
+            audio_path = _download_audio_only(url, directory)
+            source = audio_path
+            if not media_range.is_full:
+                source = create_range_audio_clip(
+                    audio_path,
+                    directory / "range.wav",
+                    media_range.start,
+                    media_range.end,
+                )
+            return apply_diarization(
+                result,
+                source,
+                timestamp_offset=(
+                    0.0 if media_range.is_full else media_range.start
+                ),
+                should_stop=should_stop,
+            )
+    except VideoExtractionError:
+        logger.exception("Optional YouTube diarization audio preparation failed")
+        return diarization_failure_result(
+            result,
+            "diarization_audio_unavailable",
+            "YouTube audio could not be prepared for speaker diarization.",
+        )
 
 
 def get_subtitle(
@@ -619,6 +677,7 @@ def get_subtitle(
     start_time: str | None = None,
     end_time: str | None = None,
     end_time_is_default: bool = False,
+    enable_diarization: bool = False,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_range_resolved: Callable[[float, float], None] | None = None,
@@ -661,9 +720,29 @@ def get_subtitle(
             if exc.code != "no_subtitles_available":
                 raise
             if on_segment is None and should_stop is None:
+                if enable_diarization:
+                    return _fallback_transcription(
+                        url,
+                        info,
+                        media_range,
+                        enable_diarization=True,
+                    )
                 return _fallback_transcription(url, info, media_range)
+            if enable_diarization:
+                return _fallback_transcription(
+                    url,
+                    info,
+                    media_range,
+                    on_segment,
+                    should_stop,
+                    True,
+                )
             return _fallback_transcription(
-                url, info, media_range, on_segment, should_stop
+                url,
+                info,
+                media_range,
+                on_segment,
+                should_stop,
             )
     else:
         _validate_selected_track(info, language, track_type)
@@ -683,9 +762,29 @@ def get_subtitle(
             exc_info=True,
         )
         if on_segment is None and should_stop is None:
+            if enable_diarization:
+                return _fallback_transcription(
+                    url,
+                    info,
+                    media_range,
+                    enable_diarization=True,
+                )
             return _fallback_transcription(url, info, media_range)
+        if enable_diarization:
+            return _fallback_transcription(
+                url,
+                info,
+                media_range,
+                on_segment,
+                should_stop,
+                True,
+            )
         return _fallback_transcription(
-            url, info, media_range, on_segment, should_stop
+            url,
+            info,
+            media_range,
+            on_segment,
+            should_stop,
         )
 
     segments = (
@@ -695,7 +794,7 @@ def get_subtitle(
             all_segments, media_range.start, media_range.end
         )
     )
-    return {
+    result = {
         "video_id": _required_text(info, "id", "video ID"),
         "title": _required_text(info, "title", "title"),
         "language": selected.language,
@@ -714,4 +813,9 @@ def get_subtitle(
         "txt": transcript_to_txt(segments),
         "srt": transcript_to_srt(segments),
     }
+    if enable_diarization:
+        result = _apply_youtube_diarization(
+            url, result, media_range, should_stop
+        )
+    return result
 

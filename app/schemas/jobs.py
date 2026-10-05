@@ -25,6 +25,7 @@ class YouTubeJobRequest(YouTubeInfoRequest):
     start_time: str | None = None
     end_time: str | None = None
     end_time_is_default: bool = False
+    enable_diarization: bool = False
 
 
 class JobError(BaseModel):

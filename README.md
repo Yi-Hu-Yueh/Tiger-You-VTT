@@ -1,7 +1,7 @@
 # Tiger-You-VTT
 
-> YouTube 搜尋 / YouTube URL / 本機影片 / 語音檔 / Windows 系統音訊的字幕擷取與語音轉文字工具  
-> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback，以及多部 YouTube 影片依序取得字幕。
+> YouTube 搜尋 / YouTube URL / 本機影片 / 語音檔 / Windows 系統音訊 / 麥克風的字幕擷取與語音轉文字工具  
+> 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback，以及可選的 **Speaker Diarization（Speaker 1 / Speaker 2 / …）**。
 
 chatgpt: https://chatgpt.com/share/6ac07112-ac1c-83ee-910d-5a7d1d747d79
 
@@ -27,6 +27,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 - [🧰 建立 venv](#create-venv)
 - [▶️ 啟用虛擬環境](#activate-venv)
 - [🔎 YouTube 搜尋](#youtube-search)
+- [🗣️ Speaker Diarization](#speaker-diarization)
 - [🖥️ UI 操作說明](#section-11)
 - [🔌 API](#section-19)
 - [🧪 執行測試](#section-28)
@@ -39,6 +40,7 @@ github: https://github.com/Yi-Hu-Yueh/Tiger-You-VTT
 1. [專案簡介](#section-1)
    - [YouTube 搜尋](#youtube-search)
    - YouTube URL / 本機影片 / 語音檔 / System Audio / Microphone
+   - [Speaker Diarization](#speaker-diarization)
 2. [主要功能](#section-2)
 3. [License](#section-3)
 
@@ -119,6 +121,18 @@ Tiger-You-VTT 是一個以 **本機處理為主** 的字幕擷取與語音轉文
 6. **麥克風錄音（Phase 2G implementation）**
 
 > 麥克風功能的程式實作與自動化測試已完成，但目前開發機 Windows 沒有暴露可用的實體 microphone input device，因此真實麥克風硬體驗收仍為 pending。
+
+### 可選能力：Speaker Diarization
+
+有限媒體可選擇「**啟用說話者分離**」，把一般 transcript 升級成：
+
+```text
+Speaker 1：...
+Speaker 2：...
+Speaker 1：...
+```
+
+此功能只回答 **who spoke when**，不會辨識真人姓名或身份。預設 **OFF**；關閉時不載入 pyannote，也不增加正常字幕/Whisper 流程成本。
 
 ---
 
@@ -426,7 +440,58 @@ TXT / VTT / SRT
 
 ---
 
-## 1.7 統一輸出
+<a id="speaker-diarization"></a>
+## 1.7 Speaker Diarization（可選）
+
+支援來源：
+
+- YouTube Search
+- YouTube URL
+- 上傳影片
+- 上傳語音檔
+
+目前不支援：
+
+- Windows System Audio
+- Microphone
+
+UI：
+
+```text
+[ ] 啟用說話者分離
+可辨識 Speaker 1、Speaker 2 等不同說話者；處理時間會增加。
+```
+
+預設 **OFF**。開啟後的流程：
+
+```text
+Base Transcript
+      +
+同一媒體範圍的 Audio
+      ↓
+pyannote.audio / community-1
+      ↓
+Speaker time regions
+      ↓
+Timestamp overlap alignment
+      ↓
+Speaker 1 / Speaker 2 / ...
+```
+
+目前 backend：
+
+```text
+pyannote.audio 4.0.7
+pyannote/speaker-diarization-community-1
+Diarization device: CPU
+Whisper: GTX 1070 / CUDA / int8_float32
+```
+
+Whisper 與 Speaker Diarization **依序執行，不做 concurrent GPU inference**。
+
+---
+
+## 1.8 統一輸出
 
 所有來源最終統一成：
 
@@ -452,6 +517,12 @@ TXT segment 使用英文半形逗號 `,` 串接：
 <a id="section-2"></a>
 ## 2. 主要功能
 
+- ✅ 可選 Speaker Diarization（預設 OFF）
+- ✅ Speaker 1 / Speaker 2 / Speaker 3… 自動說話者分群
+- ✅ speaker-aware TXT / VTT / SRT
+- ✅ 原始 TXT / VTT / SRT 保持不變
+- ✅ YouTube Search / URL / Video / Audio 支援 diarization
+- ✅ System Audio / Microphone 保持原 live 行為、不啟用 diarization
 - ✅ YouTube 關鍵字搜尋
 - ✅ YouTube 搜尋排序：相關度 / 最新上傳 / 觀看次數 / 影片長度
 - ✅ YouTube unavailable candidate 容錯
@@ -649,6 +720,8 @@ python -m pip install -r requirements.txt
 - python-multipart
 - httpx
 - **PyAudioWPatch**
+- **pyannote.audio**（Speaker Diarization，可選功能）
+- **torchaudio**（目前 diarization runtime 使用）
 
 目前已驗證：
 
@@ -658,7 +731,35 @@ faster-whisper  1.2.1
 CTranslate2     4.8.2
 PyAV            18.1.0
 PyAudioWPatch   0.2.12.8
+pyannote.audio  4.0.7
+torchaudio      2.11.0+cpu
+torch           2.12.1+cu126
+torchvision     0.27.1+cu126
 ```
+
+---
+
+## 6.3 Speaker Diarization 模型存取（只有啟用此功能才需要）
+
+Speaker Diarization 使用 gated model：
+
+```text
+pyannote/speaker-diarization-community-1
+```
+
+第一次使用前：
+
+1. 登入 Hugging Face。
+2. 在模型頁接受 access conditions。
+3. 建立 Read token。
+4. 使用 Hugging Face CLI 登入本機 credential cache：
+
+```powershell
+hf auth login
+hf auth whoami
+```
+
+> 不要把 raw token 寫入 `README.md`、`config.py`、測試或 Git。一般字幕/Whisper 流程在 Speaker Diarization 關閉時不需要載入此模型。
 
 ---
 
@@ -883,6 +984,14 @@ YouTube 搜尋 = 顯示
 影片長度
 ```
 
+可選：
+
+```text
+[ ] 啟用說話者分離
+```
+
+Search-level toggle 會套用到本次勾選的所有影片；每部影片各自建立 Speaker mapping。
+
 搜尋完成後：
 
 ```text
@@ -1010,6 +1119,8 @@ C 等待中（不再啟動）
 
 其中麥克風模式在目前開發機沒有可用實體 input device，因此真實硬體驗收尚未完成。
 
+`啟用說話者分離` 只在 YouTube URL / 上傳影片 / 上傳語音檔顯示；System Audio / Microphone 不啟用此功能。
+
 ---
 
 ## 11.5 YouTube URL
@@ -1089,6 +1200,34 @@ faster-whisper
 
 ---
 
+## 11.10 Speaker Diarization
+
+有限媒體可勾選：
+
+```text
+[ ] 啟用說話者分離
+```
+
+成功後 UI 會顯示：
+
+```text
+說話者：2
+
+Speaker 1：...
+Speaker 2：...
+Speaker 1：...
+```
+
+注意：
+
+- `Speaker 1 / Speaker 2` 只是同一媒體內的聲音群組，不是真人身份。
+- 預設 OFF。
+- 開啟後處理時間會明顯增加。
+- 同一影片可同時保留原始 transcript 與 speaker-aware transcript。
+- System Audio / Microphone 本階段不支援。
+
+---
+
 <a id="section-12"></a>
 # 12. 擷取開始 / 結束時間
 
@@ -1114,6 +1253,8 @@ H:M
 若 `0:10` 仍是 untouched default，而媒體短於 10 分鐘，會自動 clamp 到實際 media end。
 
 System Audio / Microphone 為 live source，不使用 H:M range。
+
+Speaker Diarization 開啟時只處理同一個 H:M 選取範圍，並沿用原媒體 timeline；不會對整部媒體重跑，也不會重複套用 range offset。
 
 ---
 
@@ -1246,6 +1387,30 @@ WEBVTT
 
 System Audio / Microphone 使用 session-relative timeline。
 
+## Speaker-aware output
+
+啟用 Speaker Diarization 後，原始 `segments/txt/vtt/srt` 不變，另外提供：
+
+- `diarized_segments`
+- `speaker_txt`
+- `speaker_vtt`
+- `speaker_srt`
+- `speaker_count`
+- `diarization_status`
+
+範例：
+
+```text
+Speaker 1：Good morning.
+Speaker 2：Good morning. Please have a seat.
+```
+
+```srt
+1
+00:00:01,000 --> 00:00:04,000
+[Speaker 1] Good morning.
+```
+
 ---
 
 <a id="section-18"></a>
@@ -1294,6 +1459,14 @@ http://127.0.0.1:8000/docs
 | POST | `/api/jobs/microphone` | 建立 microphone Live Job |
 | GET | `/api/jobs/{job_id}` | Job status / partial transcript / elapsed |
 | POST | `/api/jobs/{job_id}/stop` | Cooperative STOP |
+
+有限媒體同步/Job API 使用 backward-compatible 參數：
+
+```text
+enable_diarization=false
+```
+
+支援 `/api/youtube/subtitle`、`/api/video/subtitle`、`/api/audio/transcript` 以及對應 `/api/jobs/youtube`、`/api/jobs/video`、`/api/jobs/audio`。預設 `false`。
 
 ---
 
@@ -1424,6 +1597,8 @@ YouTube Search 本身只搜尋 metadata，不會因為按「搜尋」而啟動 W
 ```
 
 才會開始進入現有 YouTube subtitle / Whisper pipeline。
+
+若同時勾選「啟用說話者分離」，base transcript 完成後才 lazy-load / 使用 pyannote `community-1`。模型第一次下載需要 Hugging Face gated access；關閉時不載入。
 
 ---
 
@@ -1624,6 +1799,24 @@ CUDA inference failure
 
 ---
 
+## 26.10 Speaker Diarization 無法載入
+
+先確認已接受 Community-1 access conditions，再確認本機 Hugging Face 登入：
+
+```powershell
+hf auth whoami
+```
+
+模型：
+
+```text
+pyannote/speaker-diarization-community-1
+```
+
+如果 `enable_diarization=false`，即使 pyannote/HF access 有問題，也不應破壞一般字幕與 Whisper 路徑。
+
+---
+
 <a id="section-27"></a>
 # 27. 專案目錄結構
 
@@ -1650,6 +1843,7 @@ Tiger-You-VTT/
 │  │  ├─ system_audio.py
 │  │  ├─ microphone.py
 │  │  ├─ transcript.py
+│  │  ├─ diarization.py
 │  │  └─ jobs.py
 │  │
 │  ├─ services/
@@ -1662,6 +1856,7 @@ Tiger-You-VTT/
 │  │  ├─ whisper.py
 │  │  ├─ transcript.py
 │  │  ├─ media_range.py
+│  │  ├─ diarization.py
 │  │  ├─ jobs.py
 │  │  └─ errors.py
 │  │
@@ -1689,7 +1884,7 @@ python -m pytest -q
 目前最新開發 working tree 已驗證：
 
 ```text
-322 passed
+352 passed
 0 failed
 0 skipped
 ```
@@ -1729,6 +1924,10 @@ python -m pytest -q
 - partial transcript
 - Job lifecycle
 - elapsed timer
+- Speaker Diarization toggle / routing
+- Speaker overlap alignment / label normalization
+- speaker TXT / VTT / SRT serializers
+- Real 2-speaker pyannote runtime gate
 - UI
 
 ---
@@ -1739,18 +1938,20 @@ python -m pytest -q
 目前已推送的 GitHub `main` baseline：
 
 ```text
-98113498ee1036a802f953cbff53c58b11178b10
+a96cee14b59ad879e6f95f4ea61eb1f7373ed997
 ```
 
-Commit：
+最近的重要 commits：
 
 ```text
-feat: add audio and Windows system audio transcription
+3f16fc1b... feat: add reliable YouTube search and microphone workflows
+7fd8b324... fix: make system audio capture continuous
+a96cee14... Revert "fix: make system audio capture continuous"
 ```
 
-目前較新的 Phase 2G / Phase 2H 功能仍位於 working tree，尚未 commit/push。
+目前 **Speaker Diarization** 仍位於 working tree，尚未 commit/push；已完成 352-test regression、真實 2-speaker runtime gate 與使用者人工 UI 驗收。
 
-因此 GitHub `main` 與目前本機最新開發 UI 可能存在差異。
+因此 README 中的 Speaker Diarization 描述可能暫時領先遠端 `main`。
 
 ---
 
@@ -1758,6 +1959,9 @@ feat: add audio and Windows system audio transcription
 # 30. 安全與隱私
 
 - Whisper inference 在本機
+- Speaker Diarization inference 在本機（pyannote / CPU）
+- Hugging Face 只用於 gated model access / 首次模型下載；raw token 不應進入 source、README 或 Git
+- Speaker label 僅為同一媒體內的 `Speaker 1 / Speaker 2...`，不做真人身份辨識
 - System Audio capture 在本機
 - Microphone capture 在本機
 - 不使用雲端 ASR API
@@ -1793,6 +1997,10 @@ feat: add audio and Windows system audio transcription
 14. yt-dlp metadata extraction 可能遇到 unavailable video；目前會跳過個別失敗 candidate。
 15. YouTube Search 多影片目前採 sequential processing，不做 concurrent Whisper。
 16. YouTube Search 尚未提供 combined/merged transcript 或 ZIP。
+17. Speaker Diarization 目前只支援有限媒體；System Audio / Microphone 尚未支援 live diarization。
+18. Speaker Diarization 預設使用 CPU，處理時間可能遠高於單純字幕/Whisper。
+19. `Speaker 1 / Speaker 2` 是聲音群組，不代表真人身份；多人重疊、短發言或音質差仍可能影響 speaker count / assignment。
+20. `community-1` 為 gated Hugging Face model，首次使用需接受 access conditions 並登入。
 
 ---
 
@@ -1811,10 +2019,11 @@ feat: add audio and Windows system audio transcription
 7. 預設前 3 部影片會被勾選
 8. 依需求增加或取消勾選
 9. 確認下方每部 selected video 都有自己的文字區塊
-10. 按 YouTube 搜尋自己的「開始取得字幕」
-11. 影片依序處理
-12. 每部 partial/final text 顯示在自己的 panel
-13. 如需提前停止，按搜尋頁籤自己的「停止」
+10. 若需要多人說話者標籤，勾選「啟用說話者分離」
+11. 按 YouTube 搜尋自己的「開始取得字幕」
+12. 影片依序處理
+13. 每部 partial/final text 顯示在自己的 panel；diarization 成功時另顯示 Speaker 1 / Speaker 2…
+14. 如需提前停止，按搜尋頁籤自己的「停止」
 ```
 
 ## 一般來源
@@ -1828,11 +2037,12 @@ feat: add audio and Windows system audio transcription
    - 電腦播放聲音
    - 麥克風錄音
 3. 有限媒體確認 H:M
-4. Live source 選擇正確 device
-5. 按「開始取得字幕」
-6. 觀察 status / elapsed / partial transcript
-7. 必要時按 STOP
-8. 下載 TXT / VTT / SRT
+4. YouTube URL / 影片 / 語音檔若需要多人分離，可勾選「啟用說話者分離」
+5. Live source 選擇正確 device
+6. 按「開始取得字幕」
+7. 觀察 status / elapsed / partial transcript；若啟用 diarization，完成後查看 speaker-aware output
+8. 必要時按 STOP
+9. 下載/使用原始 TXT / VTT / SRT；speaker-aware output 另行保留
 ```
 
 ---
@@ -1843,7 +2053,7 @@ feat: add audio and Windows system audio transcription
 目前最新 working tree：
 
 ```text
-322 passed
+352 passed
 0 failed
 0 skipped
 ```
@@ -1864,6 +2074,23 @@ feat: add audio and Windows system audio transcription
 - per-selected-video transcript panels
 - WASAPI Loopback PCM capture
 - System Audio transcription / STOP
+- Speaker Diarization `pyannote.audio 4.0.7` / community-1
+- 真實 105.241 秒兩人 YouTube 媒體：`Speaker 1` / `Speaker 2`
+- YouTube Search per-video speaker panel
+- Diarization OFF regression
+- 使用者人工 UI 驗收：效果確認良好
+
+
+Speaker Diarization 效能觀察（同類短媒體）：
+
+```text
+Uploaded audio OFF: Whisper 57.408s / total 74.078s
+Uploaded audio ON : Whisper 29.408s + diarization 142.703s / total 248.672s
+YouTube manual subtitle OFF: 3.093s
+YouTube diarization ON: total 183.360s / diarization 148.203s
+```
+
+因此此功能預設 OFF，並在 UI 明確提示處理時間會增加。
 
 目前仍未完成的主要 real hardware gate：
 

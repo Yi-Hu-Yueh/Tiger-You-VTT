@@ -66,6 +66,7 @@ class _JobRecord:
     start_time: str | None = None
     end_time: str | None = None
     end_time_is_default: bool = False
+    enable_diarization: bool = False
     device_id: int | None = None
     range_start: float | None = None
     range_end: float | None = None
@@ -100,6 +101,7 @@ class JobManager:
         start_time: str | None = None,
         end_time: str | None = None,
         end_time_is_default: bool = False,
+        enable_diarization: bool = False,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
@@ -111,6 +113,7 @@ class JobManager:
             start_time=start_time,
             end_time=end_time,
             end_time_is_default=end_time_is_default,
+            enable_diarization=enable_diarization,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -123,6 +126,7 @@ class JobManager:
         start_time: str | None = None,
         end_time: str | None = None,
         end_time_is_default: bool = False,
+        enable_diarization: bool = False,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
@@ -134,6 +138,7 @@ class JobManager:
             start_time=start_time,
             end_time=end_time,
             end_time_is_default=end_time_is_default,
+            enable_diarization=enable_diarization,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -144,6 +149,7 @@ class JobManager:
         start_time: str | None = None,
         end_time: str | None = None,
         end_time_is_default: bool = False,
+        enable_diarization: bool = False,
     ) -> dict[str, str]:
         record = _JobRecord(
             job_id=uuid4().hex,
@@ -153,6 +159,7 @@ class JobManager:
             start_time=start_time,
             end_time=end_time,
             end_time_is_default=end_time_is_default,
+            enable_diarization=enable_diarization,
         )
         self._submit(record)
         return {"job_id": record.job_id, "status": "queued"}
@@ -330,6 +337,7 @@ class JobManager:
                 start_time = record.start_time
                 end_time = record.end_time
                 end_time_is_default = record.end_time_is_default
+                enable_diarization = record.enable_diarization
                 device_id = record.device_id
 
             if source_type == "system_audio":
@@ -369,6 +377,8 @@ class JobManager:
                     )
                 if end_time_is_default:
                     upload_arguments["end_time_is_default"] = True
+                if enable_diarization:
+                    upload_arguments["enable_diarization"] = True
                 if source_type == "audio":
                     result = process_uploaded_audio(
                         media_path,
@@ -403,6 +413,8 @@ class JobManager:
                     )
                 if end_time_is_default:
                     youtube_arguments["end_time_is_default"] = True
+                if enable_diarization:
+                    youtube_arguments["enable_diarization"] = True
                 result = get_subtitle(youtube_url, **youtube_arguments)
 
             clean_result = dict(result)

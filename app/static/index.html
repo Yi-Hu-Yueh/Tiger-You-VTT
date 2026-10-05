@@ -30,6 +30,7 @@
     .search-result-heading { display: flex; align-items: baseline; gap: .5rem; }
     .search-metadata { color: #52606d; font-size: .92rem; margin-top: .25rem; }
     .search-job-status { color: #1668dc; font-size: .92rem; margin-top: .25rem; }
+    .diarization-option { margin: .75rem 0; }
     .primary-tabs { display: flex; gap: .4rem; margin-bottom: 1rem; border-bottom: 1px solid #ccd3da; }
     .primary-tabs [role="tab"] { background: #eef3f8; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; }
     .primary-tabs [role="tab"][aria-selected="true"] { background: white; border-color: #9aa8b5; font-weight: 700; }
@@ -69,6 +70,10 @@
     </div>
     <p id="youtubeSearchStatus" class="note" aria-live="polite">輸入關鍵字以搜尋 YouTube。</p>
     <ol id="youtubeSearchResults"></ol>
+    <div class="diarization-option">
+      <label><input id="youtubeSearchDiarization" type="checkbox"> 啟用說話者分離</label>
+      <p class="note">可辨識 Speaker 1、Speaker 2 等不同說話者；處理時間會增加。</p>
+    </div>
     <div class="controls">
       <button id="youtubeSearchStartButton" type="button" disabled>開始取得字幕</button>
       <button id="youtubeSearchStopButton" type="button" disabled>停止</button>
@@ -108,6 +113,12 @@
     </div>
   </fieldset>
 
+  <fieldset id="diarizationControls">
+    <legend>說話者分離</legend>
+    <label><input id="enableDiarization" type="checkbox"> 啟用說話者分離</label>
+    <p class="note">可辨識 Speaker 1、Speaker 2 等不同說話者；處理時間會增加。</p>
+  </fieldset>
+
   <fieldset id="rangeControls">
     <legend>擷取區間</legend>
     <div class="range">
@@ -133,6 +144,7 @@
     ／ 執行所耗時間：<strong id="elapsedTime">00:00:00</strong>
   </div>
   <p id="message" aria-live="polite"></p>
+  <p id="diarizationStatus" class="note" aria-live="polite"></p>
   <textarea id="transcriptText" readonly placeholder="取得的字幕會顯示在這裡"></textarea>
 
   <div class="downloads">
@@ -183,6 +195,8 @@
   const microphoneDevice = document.querySelector("#microphoneDevice");
   const refreshMicrophoneDevices = document.querySelector("#refreshMicrophoneDevices");
   const rangeControls = document.querySelector("#rangeControls");
+  const diarizationControls = document.querySelector("#diarizationControls");
+  const enableDiarization = document.querySelector("#enableDiarization");
   const startTime = document.querySelector("#startTime");
   const endTime = document.querySelector("#endTime");
   const downloadButtons = document.querySelectorAll("[data-format]");
@@ -194,7 +208,9 @@
   const youtubeSearchStartButton = document.querySelector("#youtubeSearchStartButton");
   const youtubeSearchStopButton = document.querySelector("#youtubeSearchStopButton");
   const youtubeSearchBatchStatus = document.querySelector("#youtubeSearchBatchStatus");
+  const youtubeSearchDiarization = document.querySelector("#youtubeSearchDiarization");
   const youtubeTranscriptPanels = document.querySelector("#youtubeTranscriptPanels");
+  const diarizationStatus = document.querySelector("#diarizationStatus");
 
   function activatePrimaryTab(tab) {
     const searchActive = tab === youtubeSearchTab;
@@ -281,6 +297,8 @@
       microphoneControls.hidden = !microphone;
       youtubeUrl.hidden = upload || audio || liveAudio;
       rangeControls.hidden = liveAudio;
+      diarizationControls.hidden = liveAudio;
+      enableDiarization.disabled = liveAudio;
       startTime.disabled = liveAudio;
       endTime.disabled = liveAudio;
       if (systemAudio) loadSystemAudioDevices();
@@ -303,6 +321,7 @@
     youtubeSearchQuery.disabled = locked;
     youtubeSearchSort.disabled = locked;
     youtubeSearchButton.disabled = locked;
+    youtubeSearchDiarization.disabled = locked;
   }
 
   function updateSearchBatchControls() {
@@ -328,6 +347,9 @@
     const error = document.createElement("div");
     error.className = "search-transcript-error";
     error.hidden = true;
+    const speakerStatus = document.createElement("div");
+    speakerStatus.className = "note search-speaker-status";
+    speakerStatus.hidden = true;
     const textLabel = document.createElement("label");
     textLabel.textContent = "取得文字：";
     const text = document.createElement("textarea");
@@ -335,8 +357,8 @@
     text.readOnly = true;
     text.placeholder = "尚未取得字幕";
     textLabel.append(text);
-    panel.append(title, statusLine, error, textLabel);
-    return { panel, status, error, text, result };
+    panel.append(title, statusLine, speakerStatus, error, textLabel);
+    return { panel, status, speakerStatus, error, text, result };
   }
 
   function syncSearchTranscriptPanels() {
@@ -373,6 +395,24 @@
     }
     transcriptPanel.error.textContent = `錯誤：${error.code} - ${error.message}`;
     transcriptPanel.error.hidden = false;
+  }
+
+  function updateSearchDiarization(videoId, job) {
+    const transcriptPanel = searchTranscriptPanels.get(videoId);
+    if (!transcriptPanel) return;
+    const result = job.result;
+    if (result?.diarization_status === "completed") {
+      transcriptPanel.speakerStatus.textContent = `說話者分離完成：${result.speaker_count} 位說話者`;
+      transcriptPanel.speakerStatus.hidden = false;
+      transcriptPanel.text.value = result.speaker_txt || job.txt;
+    } else if (result?.diarization_status === "failed") {
+      transcriptPanel.speakerStatus.textContent = result.diarization_error?.message || "說話者分離失敗，已保留原字幕。";
+      transcriptPanel.speakerStatus.hidden = false;
+      transcriptPanel.text.value = job.txt;
+    } else if (result?.diarization_status === "stopped") {
+      transcriptPanel.speakerStatus.textContent = "說話者分離未開始。";
+      transcriptPanel.speakerStatus.hidden = false;
+    }
   }
 
   function setSearchRowStatus(videoId, label) {
@@ -504,6 +544,7 @@
       const job = await response.json();
       setSearchRowStatus(activeSearchVideoId, searchJobStatusLabel(job.status));
       setSearchTranscriptText(activeSearchVideoId, job.txt);
+      updateSearchDiarization(activeSearchVideoId, job);
       setSearchPanelError(activeSearchVideoId, job.error);
       if (terminalStates.has(job.status)) return job;
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -521,6 +562,7 @@
     const job = await response.json();
     setSearchRowStatus(activeSearchVideoId, searchJobStatusLabel(job.status));
     setSearchTranscriptText(activeSearchVideoId, job.txt);
+    updateSearchDiarization(activeSearchVideoId, job);
     setSearchPanelError(activeSearchVideoId, job.error);
     return job;
   }
@@ -537,7 +579,8 @@
           url: video.url,
           start_time: SEARCH_BATCH_START_TIME,
           end_time: SEARCH_BATCH_END_TIME,
-          end_time_is_default: true
+          end_time_is_default: true,
+          enable_diarization: youtubeSearchDiarization.checked
         })
       });
       const payload = await response.json();
@@ -552,6 +595,7 @@
       const terminalJob = await waitForSearchJobTerminal(activeSearchJobId);
       setSearchRowStatus(video.video_id, searchJobStatusLabel(terminalJob.status));
       setSearchTranscriptText(video.video_id, terminalJob.txt);
+      updateSearchDiarization(video.video_id, terminalJob);
       setSearchPanelError(video.video_id, terminalJob.error);
       return terminalJob.status;
     } catch (_error) {
@@ -645,7 +689,20 @@
     statusText.textContent = job.status;
     segmentCount.textContent = job.segment_count;
     elapsedTime.textContent = formatElapsedTime(job.elapsed_seconds);
+    const result = job.result;
     transcriptText.value = job.txt;
+    if (result?.diarization_status === "completed") {
+      transcriptText.value = result.speaker_txt || job.txt;
+    }
+    if (result?.diarization_status === "completed") {
+      diarizationStatus.textContent = `說話者分離完成：${result.speaker_count} 位說話者`;
+    } else if (result?.diarization_status === "failed") {
+      diarizationStatus.textContent = result.diarization_error?.message || "說話者分離失敗，已保留原字幕。";
+    } else if (result?.diarization_status === "stopped") {
+      diarizationStatus.textContent = "說話者分離未開始。";
+    } else {
+      diarizationStatus.textContent = "";
+    }
     const active = ["queued", "running", "stopping"].includes(job.status);
     stopButton.disabled = !active;
     startButton.disabled = active;
@@ -679,6 +736,7 @@
     transcriptText.value = "";
     segmentCount.textContent = "0";
     elapsedTime.textContent = "00:00:00";
+    diarizationStatus.textContent = "";
     const endTimeIsDefault = !endTimeEdited && endTime.value === DEFAULT_END_TIME;
     if (mode === "system_audio") {
       if (!systemAudioDevice.value) {
@@ -711,6 +769,7 @@
       body.append("start_time", startTime.value);
       body.append("end_time", endTime.value);
       body.append("end_time_is_default", String(endTimeIsDefault));
+      body.append("enable_diarization", String(enableDiarization.checked));
       const endpoint = mode === "audio" ? "/api/jobs/audio" : "/api/jobs/video";
       response = await fetch(endpoint, { method: "POST", body });
     } else {
@@ -721,7 +780,8 @@
           url: youtubeUrl.value,
           start_time: startTime.value,
           end_time: endTime.value,
-          end_time_is_default: endTimeIsDefault
+          end_time_is_default: endTimeIsDefault,
+          enable_diarization: enableDiarization.checked
         })
       });
     }

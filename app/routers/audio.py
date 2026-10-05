@@ -25,6 +25,7 @@ async def audio_transcript(
     file: UploadFile = File(..., description="A local audio file"),
     start_time: str | None = Form(default=None),
     end_time: str | None = Form(default=None),
+    enable_diarization: bool = Form(default=False),
 ) -> UploadAudioTranscriptResponse:
     try:
         display_name, suffix = safe_audio_upload_name(file.filename)
@@ -33,12 +34,17 @@ async def audio_transcript(
         ) as temporary_directory:
             media_path = Path(temporary_directory) / f"upload{suffix}"
             await store_audio_upload(file, media_path)
+            process_arguments = {
+                "start_time": start_time,
+                "end_time": end_time,
+            }
+            if enable_diarization:
+                process_arguments["enable_diarization"] = True
             transcript = await run_in_threadpool(
                 process_uploaded_audio,
                 media_path,
                 display_name,
-                start_time=start_time,
-                end_time=end_time,
+                **process_arguments,
             )
     except VideoExtractionError as exc:
         raise HTTPException(

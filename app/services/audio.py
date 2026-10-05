@@ -135,6 +135,7 @@ def process_uploaded_audio(
     start_time: str | None = None,
     end_time: str | None = None,
     end_time_is_default: bool = False,
+    enable_diarization: bool = False,
     on_segment: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_range_resolved: Callable[[float, float], None] | None = None,
@@ -185,35 +186,45 @@ def process_uploaded_audio(
         transcription = _transcribe_audio(
             transcription_source, ranged_on_segment, should_stop
         )
+        segments = (
+            transcription.segments
+            if media_range.is_full
+            else offset_clip_segments(
+                transcription.segments, media_range.start, media_range.end
+            )
+        )
+        result = {
+            "filename": filename,
+            "language": transcription.language,
+            "type": "transcribed",
+            "selection_mode": "direct",
+            "segment_count": len(segments),
+            "duration": media.duration,
+            "range_start": media_range.start,
+            "range_end": media_range.end,
+            "segments": segments,
+            "vtt": transcript_to_vtt(segments),
+            "txt": transcript_to_txt(segments),
+            "srt": transcript_to_srt(segments),
+            "transcription_model": transcription.model,
+            "transcription_device": transcription.device,
+            "transcription_compute_type": transcription.compute_type,
+            "transcription_duration": transcription.duration_seconds,
+        }
+        if transcription.stopped:
+            result["_stopped"] = True
+        if enable_diarization:
+            from app.services.diarization import apply_diarization
+
+            result = apply_diarization(
+                result,
+                transcription_source,
+                timestamp_offset=(
+                    0.0 if media_range.is_full else media_range.start
+                ),
+                should_stop=should_stop,
+            )
     finally:
         if range_directory is not None:
             range_directory.cleanup()
-
-    segments = (
-        transcription.segments
-        if media_range.is_full
-        else offset_clip_segments(
-            transcription.segments, media_range.start, media_range.end
-        )
-    )
-    result = {
-        "filename": filename,
-        "language": transcription.language,
-        "type": "transcribed",
-        "selection_mode": "direct",
-        "segment_count": len(segments),
-        "duration": media.duration,
-        "range_start": media_range.start,
-        "range_end": media_range.end,
-        "segments": segments,
-        "vtt": transcript_to_vtt(segments),
-        "txt": transcript_to_txt(segments),
-        "srt": transcript_to_srt(segments),
-        "transcription_model": transcription.model,
-        "transcription_device": transcription.device,
-        "transcription_compute_type": transcription.compute_type,
-        "transcription_duration": transcription.duration_seconds,
-    }
-    if transcription.stopped:
-        result["_stopped"] = True
     return result

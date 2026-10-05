@@ -29,6 +29,12 @@ class MicrophoneSettings:
     silence_peak_threshold: int = 16
 
 
+@dataclass(frozen=True)
+class DiarizationSettings:
+    model: str
+    device: str
+
+
 def _choice(name: str, default: str, allowed: set[str] | None = None) -> str:
     value = os.getenv(name, default).strip()
     if not value:
@@ -90,6 +96,13 @@ MICROPHONE_SETTINGS = MicrophoneSettings(
     silence_peak_threshold=_positive_int(
         "MICROPHONE_SILENCE_PEAK_THRESHOLD", 16
     ),
+)
+
+DIARIZATION_SETTINGS = DiarizationSettings(
+    model=_choice(
+        "DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1"
+    ),
+    device=_choice("DIARIZATION_DEVICE", "cpu", {"cpu", "cuda"}),
 )
 
 YOUTUBE_SEARCH_DEFAULT_LIMIT = 10

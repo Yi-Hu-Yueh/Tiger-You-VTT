@@ -87,6 +87,16 @@ def test_root_serves_minimal_job_interface() -> None:
     assert ".join(\":\")" in html
     assert 'const DEFAULT_END_TIME = "0:10"' in html
     assert "!endTimeEdited && endTime.value === DEFAULT_END_TIME" in html
+    assert html.count("啟用說話者分離") == 2
+    assert html.count("可辨識 Speaker 1、Speaker 2 等不同說話者；處理時間會增加。") == 2
+    assert 'id="youtubeSearchDiarization" type="checkbox"' in html
+    assert 'id="enableDiarization" type="checkbox"' in html
+    assert "diarizationControls.hidden = liveAudio" in html
+    assert "enableDiarization.disabled = liveAudio" in html
+    assert 'body.append("enable_diarization", String(enableDiarization.checked))' in html
+    assert "enable_diarization: enableDiarization.checked" in html
+    assert "result?.diarization_status === \"completed\"" in html
+    assert "result.speaker_txt || job.txt" in html
 
     stop_handler = html.split(
         'stopButton.addEventListener("click"', 1

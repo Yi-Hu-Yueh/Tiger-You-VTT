@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from app.schemas.transcript import TranscriptSegment
+from app.schemas.diarization import DiarizationFields
 
 
 _YOUTUBE_HOSTS = {
@@ -96,6 +97,7 @@ class YouTubeSubtitleRequest(YouTubeInfoRequest):
     type: Literal["manual", "auto"] | None = None
     start_time: str | None = None
     end_time: str | None = None
+    enable_diarization: bool = False
 
     @model_validator(mode="after")
     def validate_selection_mode(self) -> "YouTubeSubtitleRequest":
@@ -104,7 +106,7 @@ class YouTubeSubtitleRequest(YouTubeInfoRequest):
         return self
 
 
-class YouTubeSubtitleResponse(BaseModel):
+class YouTubeSubtitleResponse(DiarizationFields):
     model_config = ConfigDict(extra="forbid")
 
     video_id: str

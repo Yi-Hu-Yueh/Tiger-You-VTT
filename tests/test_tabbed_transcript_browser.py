@@ -322,6 +322,7 @@ def test_tabs_panels_partial_text_sequence_failure_and_stop_in_browser(tmp_path:
             "start_time": "0:0",
             "end_time": "0:10",
             "end_time_is_default": True,
+                "enable_diarization": False,
         }
         for video_id in ("a", "b", "c", "d")
     ]

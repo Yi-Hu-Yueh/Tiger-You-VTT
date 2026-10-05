@@ -21,6 +21,7 @@ async def video_subtitle(
     file: UploadFile = File(..., description="A local video file"),
     start_time: str | None = Form(default=None),
     end_time: str | None = Form(default=None),
+    enable_diarization: bool = Form(default=False),
 ) -> UploadVideoSubtitleResponse:
     try:
         display_name, suffix = safe_upload_name(file.filename)
@@ -31,21 +32,35 @@ async def video_subtitle(
             media_path = working_directory / f"upload{suffix}"
             await store_upload(file, media_path)
             if (start_time or "").strip() or (end_time or "").strip():
+                process_arguments = {
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+                if enable_diarization:
+                    process_arguments["enable_diarization"] = True
                 subtitle = await run_in_threadpool(
                     process_uploaded_video,
                     media_path,
                     display_name,
                     working_directory,
-                    start_time=start_time,
-                    end_time=end_time,
+                    **process_arguments,
                 )
             else:
-                subtitle = await run_in_threadpool(
-                    process_uploaded_video,
-                    media_path,
-                    display_name,
-                    working_directory,
-                )
+                if enable_diarization:
+                    subtitle = await run_in_threadpool(
+                        process_uploaded_video,
+                        media_path,
+                        display_name,
+                        working_directory,
+                        enable_diarization=True,
+                    )
+                else:
+                    subtitle = await run_in_threadpool(
+                        process_uploaded_video,
+                        media_path,
+                        display_name,
+                        working_directory,
+                    )
     except VideoExtractionError as exc:
         raise HTTPException(
             status_code=exc.status_code,

@@ -56,21 +56,35 @@ async def youtube_subtitle(
         if (request.start_time or "").strip() or (
             request.end_time or ""
         ).strip():
+            subtitle_arguments = {
+                "start_time": request.start_time,
+                "end_time": request.end_time,
+            }
+            if request.enable_diarization:
+                subtitle_arguments["enable_diarization"] = True
             subtitle = await run_in_threadpool(
                 get_subtitle,
                 str(request.url),
                 request.language,
                 request.type,
-                start_time=request.start_time,
-                end_time=request.end_time,
+                **subtitle_arguments,
             )
         else:
-            subtitle = await run_in_threadpool(
-                get_subtitle,
-                str(request.url),
-                request.language,
-                request.type,
-            )
+            if request.enable_diarization:
+                subtitle = await run_in_threadpool(
+                    get_subtitle,
+                    str(request.url),
+                    request.language,
+                    request.type,
+                    enable_diarization=True,
+                )
+            else:
+                subtitle = await run_in_threadpool(
+                    get_subtitle,
+                    str(request.url),
+                    request.language,
+                    request.type,
+                )
     except VideoExtractionError as exc:
         raise HTTPException(
             status_code=exc.status_code,

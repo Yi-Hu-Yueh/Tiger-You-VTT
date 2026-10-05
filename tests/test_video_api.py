@@ -122,6 +122,7 @@ def test_openapi_exposes_required_file_and_optional_range_fields() -> None:
         "file",
         "start_time",
         "end_time",
+        "enable_diarization",
     }
 
 
