@@ -14,4 +14,24 @@ venv_*/
 .vscode/
 .DS_Store
 Thumbs.db
+.runtime/
+dist/android/
+android-app/.gradle/
+android-app/.kotlin/
+android-app/**/build/
+android-app/local.properties
+*.apk
+*.jks
+*.keystore
+
+# Local model/runtime/toolchain inputs and incomplete downloads are not source.
+*.onnx
+*.part
+/.cache/
+/models/
+/model-cache/
+/android-sdk/
+/android-jdk/
+/jdk/
+/sdk/
 

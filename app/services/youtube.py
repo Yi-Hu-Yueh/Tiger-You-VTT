@@ -10,6 +10,7 @@ import yt_dlp
 from yt_dlp.utils import DownloadError, UnsupportedError
 
 from app.services.errors import VideoExtractionError
+from app.services.youtube_auth import extractor, is_auth_challenge, with_auth_fallback
 from app.services.media_range import (
     ResolvedMediaRange,
     create_range_audio_clip,
@@ -150,9 +151,14 @@ def get_video_info(url: str) -> dict[str, Any]:
 
 
 def _extract_raw_info(url: str) -> Mapping[str, Any]:
+    def attempt(cookie_file):
+        with extractor(yt_dlp.YoutubeDL, YDL_OPTIONS, cookie_file) as ydl:
+            return ydl.extract_info(url, download=False)
+
     try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = with_auth_fallback(attempt)
+    except VideoExtractionError:
+        raise
     except UnsupportedError as exc:
         raise VideoExtractionError(
             status_code=422,
@@ -329,9 +335,17 @@ def _download_selected_vtt(
         "nopart": True,
     }
 
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
+    def attempt(cookie_file):
+        if cookie_file is not None:
+            for partial in directory.glob("*.vtt"):
+                partial.unlink(missing_ok=True)
+        with extractor(yt_dlp.YoutubeDL, options, cookie_file) as ydl:
             ydl.extract_info(url, download=True)
+
+    try:
+        with_auth_fallback(attempt)
+    except VideoExtractionError:
+        raise
     except DownloadError as exc:
         raise VideoExtractionError(
             502,
@@ -438,30 +452,31 @@ def _download_audio_only(url: str, directory: Path) -> Path:
         "nopart": True,
     }
 
-    for attempt in range(2):
-        try:
-            with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.extract_info(url, download=True)
-            break
-        except DownloadError as exc:
-            if attempt == 0 and _is_transient_download_error(exc):
-                logger.warning(
-                    "Retrying one transient YouTube audio download failure",
-                    exc_info=True,
-                )
-                _clear_failed_audio_download(directory)
-                continue
-            raise VideoExtractionError(
-                502,
-                "audio_download_failed",
-                "yt-dlp could not download the selected audio-only stream.",
-            ) from exc
-        except Exception as exc:
-            raise VideoExtractionError(
-                502,
-                "audio_download_failed",
-                "The audio-only stream could not be downloaded.",
-            ) from exc
+    def attempt(cookie_file):
+        if cookie_file is not None:
+            _clear_failed_audio_download(directory)
+        # Preserve the existing anonymous transient retry, but never repeat an
+        # authenticated attempt (even when its failure would be transient).
+        for transient_attempt in range(2 if cookie_file is None else 1):
+            try:
+                with extractor(yt_dlp.YoutubeDL, options, cookie_file) as ydl:
+                    ydl.extract_info(url, download=True)
+                return
+            except DownloadError as exc:
+                if cookie_file is None and transient_attempt == 0 and not is_auth_challenge(exc) and _is_transient_download_error(exc):
+                    logger.warning("Retrying one transient YouTube audio download failure")
+                    _clear_failed_audio_download(directory)
+                    continue
+                raise
+
+    try:
+        with_auth_fallback(attempt)
+    except VideoExtractionError:
+        raise
+    except DownloadError as exc:
+        raise VideoExtractionError(502, "audio_download_failed", "yt-dlp could not download the selected audio-only stream.") from exc
+    except Exception as exc:
+        raise VideoExtractionError(502, "audio_download_failed", "The audio-only stream could not be downloaded.") from exc
 
     audio_files = [
         path

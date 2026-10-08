@@ -5,7 +5,7 @@ from app.services.errors import VideoExtractionError
 from app.services.system_audio import SystemAudioDevice
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def device(device_id=5, *, default=True):

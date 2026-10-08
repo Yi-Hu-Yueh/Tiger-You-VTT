@@ -1,0 +1,4 @@
+# Hash-pinned model vocabulary must survive Windows autocrlf unchanged.
+android-standalone/app/src/main/assets/sensevoice-small-int8/tokens.txt -text
+*.docx -text
+*.jar -text

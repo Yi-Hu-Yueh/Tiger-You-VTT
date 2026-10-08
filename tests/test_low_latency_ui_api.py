@@ -30,7 +30,7 @@ def test_default_off_invokes_original_path_without_turbo_or_queue(monkeypatch, b
     monkeypatch.setattr(manager, '_run_system_audio_capture', lambda *args: calls.append('old') or dict(segments=[], txt='', srt='', vtt='WEBVTT\n\n', _stopped=True))
     monkeypatch.setattr(manager, '_run_low_latency_capture', lambda *args: pytest.fail('new path invoked'))
     try:
-        with TestClient(app) as client:
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
             job = client.post('/api/jobs/system-audio', json=body).json()['job_id']
             wait(lambda: manager.snapshot(job)['status'] == 'stopped')
             assert calls == ['old']
@@ -56,7 +56,7 @@ def test_job_metadata_phases_partial_error_and_stop(monkeypatch, failure):
         return dict(low_latency=True, live_phase='stopping', processed_windows=1)
     monkeypatch.setattr('app.services.low_latency_audio.run_low_latency', run)
     try:
-        with TestClient(app) as client:
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
             job = client.post('/api/jobs/system-audio', json={'low_latency': True}).json()['job_id']
             assert started.wait(1)
             snap = client.get(f'/api/jobs/{job}').json()

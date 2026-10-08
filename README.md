@@ -1,5 +1,130 @@
 # Tiger-You-VTT
 
+## 最終驗收與三種架構
+
+本節為 2026-10-09 owner 接受的最終狀態；下方各階段的測試數量、APK 與開發紀錄是歷史證據，不代表仍待 owner 驗收。最終主機回歸與推送結果以本次 closure 報告及 Git 紀錄為準。
+
+| 架構 | 執行位置與功能 | 網路與安全邊界 |
+|---|---|---|
+| PC / Web | YouTube Search、直接 URL、既有字幕、無字幕轉 PC Whisper；上傳音訊/影片、System Audio、Low-Latency、Microphone、Desktop Overlay、選用 diarization | yt-dlp 匿名優先，驗證阻擋才以本機 Cookie 重試一次；Deno / yt-dlp-ejs 處理 JS challenge。GPU/CPU fallback 沿用現有設定。 |
+| Android Client + PC Server | Android → 受信任 LAN → PC FastAPI → PC GPU / services；搜尋、直接 URL、媒體上傳、PC System Audio 遙控、Low-Latency | **需要 PC server**。mobile-token 驗證；私人 LAN 的 HTTP 不提供加密，不可直接暴露公網。不是手機本機系統音訊擷取。 |
+| Android Standalone | 手機 → sherpa-onnx → APK 內建 SenseVoice → 本機推論；Local Media、Microphone、Device Audio；另有線上 YouTube 搜尋 / URL / 字幕 / 無字幕音訊備援 | **不需要 PC**。Offline Core 不依賴網路；INTERNET 僅為 YouTube layer 所需。沒有內嵌 Google 登入、Cookie 或 PC token。 |
+
+Owner 最終驗收（實體操作，由 owner 宣告，不以主機測試代替）：
+
+```text
+Android Client + PC Server: OWNER ACCEPTANCE = PASS
+OWNER_CHECKPOINT_A = PASS
+OWNER_CHECKPOINT_B = PASS
+OWNER_CHECKPOINT_C = PASS
+OWNER_CHECKPOINT_C_UX = PASS
+OWNER_CHECKPOINT_D = PASS
+OWNER_CHECKPOINT_D2R = PASS
+```
+
+Standalone 支援本機媒體、麥克風、Android playback/device audio、MediaProjection UX、YouTube Search、直接 URL、既有字幕、無字幕 M4A 下載與本機 SenseVoice、TXT/VTT/SRT 匯出。Android 平台仍要求 RECORD_AUDIO 與系統擷取同意；來源 App 禁止擷取、DRM、OEM 限制不能繞過。需登入的 YouTube 影片可能無法使用，公開影片匿名存取也可能受上游變更影響。
+
+### Standalone 可重現建置
+
+在 fresh clone 安裝 JDK 17、Android SDK 36.1 / build-tools 36.0.0，設定 `JAVA_HOME` / `ANDROID_HOME`，由根目錄執行：
+
+```powershell
+./scripts/prepare_standalone_model.ps1
+./android-standalone/tools/fetch-runtime.ps1
+cd android-standalone
+./gradlew.bat test assembleDebug --console=plain
+```
+
+模型 bootstrap 使用 pinned HTTPS 來源，預設快取 `D:\TigerModels\Tiger-You-VTT\SenseVoice-Small-INT8\`，先驗大小及 SHA256，再複製至 assets 並重新驗證。可用 `-CacheDirectory` 改位置；`-NoDownload` 僅接受既有正確快取。錯誤快取 fail closed 且保留供人工處理。正常 Gradle **不會下載模型**，缺檔或 hash 不符即失敗。模型、APK、build/cache、`.runtime/` 與秘密皆不進 Git；小型 `tokens.txt`、來源與 license metadata 進 Git。
+
+固定模型 repository：`csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`；revision `2365baeacb507f821a0c8120fcee3d484dba7a07`。model 為 239233841 bytes，SHA256 `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51`；tokens 為 315894 bytes，SHA256 `f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc`。執行 `./tests/test_standalone_model.ps1` 可驗證快取、大小/hash 拒絕、複製、重跑與 partial 拒絕。
+
+Standalone NewPipe 固定為 `com.github.teamnewpipe:NewPipeExtractor:v0.26.5`，revision `f9e6bb808f82bf3e4dc1f2a29a16fd376931c8ef`。D1：搜尋 / URL → metadata → caption track → TranscriptSegment → TXT/VTT/SRT，不啟動 SenseVoice。D2：無字幕 → audio-only M4A → 1 MiB sequential Range → Android decode → SenseVoice → TranscriptSegment → TXT/VTT/SRT。D2-R 修正原 whole-file request 的 60 秒 whole-call timeout（實測僅收到 1916928 / 29690750 bytes），採 bounded range 與大小、Content-Range、容器完整性檢查；不是對 YouTube 永久穩定性的保證。
+
+授權與公開發佈限制見 [授權及再散布審查](docs/LICENSING.md)。Tiger 原始碼 MIT、sherpa-onnx Apache-2.0、SenseVoice 自訂 FunASR model license、NewPipe GPL-3.0-or-later；**Standalone APK 不是 MIT-only，也尚未宣告公開再散布準備完成**。Owner/private testing PASS 不等於法律保證。完整架構見 `Tiger-You-VTT_系統架構文件_Android-Standalone-v0.4.1.docx`；Android 詳細歷史與操作程序見 [Standalone README](android-standalone/README.md)。
+
+## YouTube JavaScript 驗證：自動尋找 Deno
+
+目前 YouTube JavaScript challenge solving 需要 **Deno 2.3.0 以上版本**；Python/PyPI 環境也需要相容的 **yt-dlp-ejs**（`yt-dlp[default]` 會宣告此相依套件）。Tiger-You-VTT 不會自行安裝軟體，也不需要 Node.js。
+
+PC backend 依序尋找：`YOUTUBE_DENO_PATH` → 目前程序 PATH 的 `deno` → `D:\TigerTools\deno\deno.exe`。找到支援的執行檔後，直接透過 yt-dlp Python API 的 `js_runtimes` 設定使用，**不需要手動執行 `$env:PATH = ...`**，也不會更改程序或 Windows 全域 PATH。
+
+可選擇在啟動 backend 前設定 `$env:YOUTUBE_DENO_PATH = 'D:\TigerTools\deno\deno.exe'`。相對路徑以專案根目錄為準；明確設定卻空白、檔案不存在、指向目錄、無法執行或版本不支援時，會回傳 `youtube_deno_configuration_invalid`，不會偷偷改用其他位置。未設定且找不到 Deno 時，不影響不需 JS 驗證的操作；遇到明確的 JS 驗證失敗則回傳 `youtube_js_runtime_required`，請確認 PC 的 Deno 與 yt-dlp-ejs。
+
+此設定適用 metadata、字幕、audio-only 下載、搜尋及 Cookie 重試；下述匿名優先／只重試一次的 Cookie 政策不變。Cookie 仍是 PC 本機秘密；YouTube 使登入工作階段失效時，請以可信任方法重新匯出並替換 `.runtime/youtube_cookies.txt`，不要提交或分享。
+
+## YouTube 本機 Cookie 驗證備援
+
+所有 YouTube metadata、字幕、audio-only 下載與搜尋（含候選影片資訊）仍先匿名執行。只有明確的 YouTube 登入／bot 驗證阻擋，才使用 PC 本機 Cookie **重試一次**。Cookie 並非正常使用的必要條件，也不會預設送到每個請求；一般私人、刪除、地區限制或無法取得 metadata 的影片不會因此觸發登入重試。
+
+- 使用可信任的方法自行匯出 yt-dlp 相容的 **Netscape cookies.txt**，放到專案 `.runtime/youtube_cookies.txt`。應用程式不安裝或依賴任何特定瀏覽器擴充套件。
+- 可在啟動 PC backend 前設定 `$env:YOUTUBE_COOKIES_FILE = 'D:\private\youtube_cookies.txt'` 覆寫位置。相對路徑一律相對專案根目錄，不隨目前工作目錄變化；明確設定卻無效時，不會退回搜尋其他目錄。
+- 檔案不存在、非一般檔案、不可讀、Cookie 載入失敗或驗證仍受阻時，回傳 `youtube_auth_required` 與「YouTube 要求登入驗證，請在 PC 設定本機 YouTube Cookie 後再試。」
+- Cookie 可能授權存取已登入的 YouTube 工作階段，**請視為秘密，勿提交、分享或放入 Android**；不需儲存 Google 密碼。過期時重新匯出，不再使用時自行刪除。`.runtime/` 已受 Git-ignore 保護；若使用其他位置，也必須保持在 Git 之外。
+- Android 仍只用 mobile token 連 PC。YouTube Cookie 僅由 PC 使用，不透過 API、health、Swagger 或手機傳遞。前端只顯示受控錯誤。
+- Windows 上 `--cookies-from-browser edge` 可能出現 `Could not copy Chrome cookie database`；本專案支援的是明確的本機 Cookie 檔案，不讀取 Edge/Chrome Cookie database。
+
+人工驗收：先不放 Cookie，確認一般影片仍走匿名流程；再以可信任的 Cookie 檔案重試 `https://www.youtube.com/watch?v=8TE2DvpKxvA`，確認字幕或 audio-only fallback 成功，並測試搜尋及 Android 顯示。只有實際通過後，才能宣告真實 Cookie 驗收完成；程式測試不代表已通過 YouTube 的實際登入限制。
+
+## Android App（測試版）
+
+原生 Kotlin / Jetpack Compose Android 前端（Android 8.0 / API 26 以上），安裝及使用 APK **不需要 Android Studio**。PC 仍執行 Whisper、CUDA、pyannote 與 WASAPI；手機只負責操作、上傳、顯示與匯出。**2026-10-07 實體 Android 手機驗收已 PASS**。
+
+1. 手機與 PC 連上同一個**受信任的私人 LAN**。在專案根目錄以 PowerShell 執行 `./scripts/start_mobile_server.ps1`（可用 `-Python <python.exe>` 指定環境）。一般桌面啟動方式仍使用 `127.0.0.1:8000`，沒有改動。
+2. 行動版腳本另以 `0.0.0.0:8000` 啟動，顯示可用 IPv4 網址與隨機連線金鑰；請選擇實際 Wi-Fi/Ethernet 位址，而非虛擬網卡。不要同時啟動兩個占用 8000 的伺服器。腳本不修改 Windows 防火牆；若無法連線，請確認私人網路的 Python 入站權限，勿停用防火牆或設定公網 port forwarding。
+3. 把 `dist/android/Tiger-You-VTT-Android-debug.apk` 複製到手機，點選 APK，允許該檔案來源安裝應用程式，安裝後開啟 **Tiger-You-VTT**。
+4. 「設定」輸入腳本顯示的伺服器網址及「連線金鑰」，按「儲存」→「測試連線」。Android 不可使用 PC 的 `127.0.0.1`。
+5. 「搜尋」可勾選 YouTube 結果，預選前三筆並**依序**建立工作；「來源」支援直接 YouTube URL、系統檔案選取器上傳影片/音訊、H:M 範圍與預設關閉的「啟用說話者分離」。
+6. 「電腦音訊」載入並選取 **PC** 的 WASAPI Loopback 裝置；「低延遲即時字幕」預設關閉，開啟時沿用 PC 現有暖機與 Turbo 流程。這不是擷取手機聲音。
+7. 工作約每秒輪詢，顯示部分字幕，可按 STOP；每張字幕卡可用 Android 儲存選取器匯出 TXT/VTT/SRT。有 Speaker 輸出時可切回原始字幕；不覆蓋原始版本。
+
+安全：非 loopback HTTP 請求預設拒絕；有效 `X-Tiger-Mobile-Token` 標頭才可使用行動 API。金鑰保存在 Git-ignored `.runtime/mobile_api_token.txt`，不得分享或提交；手機以私有 preferences 保存，停用 Android backup。localhost Web UI 不需要金鑰，Overlay launcher 即使附行動金鑰仍只允許 localhost。腳本停用 Uvicorn proxy headers，避免來源位址偽造。**HTTP 沒有加密**，金鑰不能防止惡意 LAN 監聽；僅限信任網路，勿公開此服務。
+
+v1 限制：不在手機跑 CUDA / Whisper / pyannote，不擷取 Android 系統音訊、不串流手機麥克風、不提供 HTTPS。PC microphone 不是此版功能。App 請保持開啟；Android 終止程序或關閉 App 不會自動終止 PC 工作。斷線時保留已取得字幕並重試；PC 重啟後工作不存在。上傳取消會取消 HTTP；若 PC 已建立工作但回應因斷線遺失，請在 PC 確認是否仍有工作。重裝/清除 App 資料後需重新輸入設定。
+
+命令列重建（不需 IDE）：JDK 17+、Android SDK platform 36.1 / build-tools 36.0.0，設定 `JAVA_HOME` 與 `ANDROID_HOME` 後：
+
+```powershell
+cd android-app
+./gradlew.bat test
+./gradlew.bat assembleDebug
+```
+
+採用 AGP 9.1.1、Gradle 9.3.1、Kotlin/Compose compiler 2.2.10；SDK/JDK/Gradle 相容性見 [Android 官方說明](https://developer.android.com/build/releases/agp-9-1-0-release-notes)。輸出原檔為 `android-app/app/build/outputs/apk/debug/app-debug.apk`。APK、build cache、runtime token 均不進 Git。實體手機驗收已完成，架構文件已同步更新。
+
+
+### Android v0.1.0 實體手機驗收（PASS）
+
+2026-10-07 以實體 Android 手機完成端到端驗收，手機與 PC 透過受信任的私人 LAN / 手機熱點連線。以下 4 個核心流程全部成功：
+
+1. **YouTube 搜尋 → 取得字幕**：PASS。
+2. **直接 YouTube URL → 取得字幕**：PASS。
+3. **Android → PC 電腦音訊 → Low-Latency Live ASR → 字幕回手機**：PASS。
+4. **手機影片 / 語音檔上傳 → PC GTX 1070 / Whisper 處理 → 字幕回手機**：PASS。
+
+這表示實際鏈路已驗證：
+
+```text
+Android App
+→ 私人 LAN / 手機熱點
+→ Tiger-You-VTT FastAPI
+→ PC GTX 1070 CUDA / Whisper / pyannote
+→ partial / final transcript
+→ Android App
+```
+
+目前測試版 APK：
+
+```text
+package      tw.tiger.tigeryouvtt
+version      0.1.0
+versionCode  1
+size         11,918,506 bytes
+SHA-256      1BE5D2491B8AAD7CCB7AF3E73677C8AF268366002DE8CC0EDFE25B01DC5A81AA
+```
+
+Command-line Android build / test 亦已通過：**18 passed / 0 failed / 0 skipped**；Python backend 最新完整回歸為 **447 passed / 0 failed / 0 skipped**（另有 1 個既有 pytest cache warning）。
+
 > YouTube 搜尋 / YouTube URL / 本機影片 / 語音檔 / Windows 系統音訊 / 麥克風的字幕擷取與語音轉文字工具  
 > 支援 YouTube 人工字幕、自動字幕、Embedded Text Subtitle、`faster-whisper` 本機 ASR、GPU/CPU fallback、WASAPI Loopback、可選 **Speaker Diarization**、Windows **原生桌面字幕 Overlay**，以及可選 **Low-Latency Live ASR（低延遲即時字幕）**。
 
@@ -2100,8 +2225,15 @@ Tiger-You-VTT/
 │  └─ static/
 │     └─ index.html
 │
+├─ android-app/
+│  ├─ app/
+│  ├─ gradle/
+│  ├─ gradlew.bat
+│  └─ settings.gradle.kts
+│
 ├─ scripts/
-│  └─ start_overlay.ps1
+│  ├─ start_overlay.ps1
+│  └─ start_mobile_server.ps1
 ├─ tests/
 ├─ pics/
 ├─ requirements.txt
@@ -2121,10 +2253,18 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-目前最新開發 working tree 已驗證：
+目前最新 Android + Mobile LAN working tree 已驗證：
 
 ```text
-438 passed
+447 passed
+0 failed
+0 skipped
+```
+
+Android command-line unit tests：
+
+```text
+18 passed
 0 failed
 0 skipped
 ```
@@ -2192,7 +2332,7 @@ Low-Latency / Overlay / UI focused coverage（最近一次 bounded regression）
 目前已推送的 GitHub `main` baseline：
 
 ```text
-1661923bf0ed29b4ad1061c49a52d76352729545
+ee101789794e5a435dc21f0a0bf006b9d4a2a0b3
 ```
 
 最近的重要 commits：
@@ -2203,11 +2343,13 @@ Low-Latency / Overlay / UI focused coverage（最近一次 bounded regression）
 a96cee14... Revert "fix: make system audio capture continuous"
 fbd0406d... feat: add optional speaker diarization
 1661923b... feat: add native desktop caption overlay
+95666c5... feat: add low-latency live system audio captions
+ee101789... feat: add low-latency live system audio captions（documentation follow-up）
 ```
 
-目前 **Speaker Diarization** 與 **Windows Native Desktop Overlay + Web UI launcher** 均已提交至 `main`。
+目前 **Speaker Diarization、Windows Native Desktop Overlay、Web UI launcher 與 Low-Latency Live ASR** 均已提交至 `main`。
 
-較新的 **Low-Latency Live ASR** 位於 working tree，尚未 commit/push；已完成 438-test regression、真實 65 秒 WASAPI backend gate 與使用者 Web UI 人工驗收。
+**Android App v0.1.0 + Mobile LAN authentication** 已完成實體手機 4/4 核心流程人工驗收；早期階段的 447-test Python regression、18 個 Android unit tests 與 APK 驗證為歷史紀錄。最終接受狀態見頁首矩陣；closure 回歸與提交狀態以最終報告及 Git 紀錄為準。
 
 ---
 
@@ -2223,6 +2365,10 @@ fbd0406d... feat: add optional speaker diarization
 - Low-Latency queue 為 bounded FIFO，overrun 明確失敗，不將音訊靜默丟棄後宣稱成功
 - Native Desktop Overlay 只透過本機 FastAPI API 讀取字幕，不直接開第二套 WASAPI
 - Web Overlay launcher 僅允許 loopback client / same-origin launch，固定執行 `sys.executable -m app.overlay.main`，`shell=False`
+- Android 行動版只在受信任私人 LAN 使用；非 loopback API 必須攜帶 `X-Tiger-Mobile-Token`
+- Mobile token 以 `.runtime/mobile_api_token.txt` 本機保存並 Git-ignore；不放入 URL、不提交 Git
+- `POST /api/overlay/start` 即使帶有效 mobile token 仍維持 localhost-only，Android 無法遠端啟動桌面 process
+- Android v1 使用 HTTP，**不提供傳輸加密**；token 不能抵抗惡意 LAN 監聽，因此不得公開對 Internet
 - Backend 只追蹤自己啟動的 Overlay process，不終止其他 Python/PySide 程序
 - Microphone capture 在本機
 - 不使用雲端 ASR API
@@ -2266,6 +2412,10 @@ fbd0406d... feat: add optional speaker diarization
 22. Low-Latency Live ASR 預設 OFF；啟用後採 4 秒 windows / Turbo，但仍可能受 GPU contention、語音密度與邊界切割影響，不是零延遲。
 23. Low-Latency production overlap = 0；因此 4 秒邊界附近可能出現片語切割或少量字詞替換。
 24. Windows 可能重新編號 WASAPI device ID，應依 `[Loopback]` 名稱選擇。
+25. Android v0.1.0 是 PC backend 的原生前端；手機不執行 CUDA / Whisper / pyannote。
+26. Android v0.1.0 不擷取 Android 系統音訊、不串流手機麥克風到 PC。
+27. Android v0.1.0 的 LAN transport 為 HTTP；只適合受信任私人 LAN / 手機熱點，不提供 HTTPS。
+28. Android App 關閉或被系統終止時，不代表 PC 上已建立的 Job 自動停止。
 
 ---
 
@@ -2311,18 +2461,37 @@ fbd0406d... feat: add optional speaker diarization
 10. 下載/使用原始 TXT / VTT / SRT；speaker-aware output 另行保留
 ```
 
+
+## Android App v0.1.0
+
+```text
+1. PC 執行 .\scripts\start_mobile_server.ps1
+2. 手機與 PC 連在同一個受信任私人 LAN / 手機熱點
+3. Android「設定」輸入 PC LAN URL + Mobile Token
+4. 儲存 → 測試連線 → 顯示「已連線」
+5. 「搜尋」測 YouTube Search；或「來源」貼直接 YouTube URL
+6. 手機可用系統檔案選取器上傳影片 / 語音檔
+7. 「電腦音訊」選 PC Realtek [Loopback]；可勾低延遲即時字幕
+8. 觀察 partial/final transcript、STOP、Speaker output 與 TXT/VTT/SRT 匯出
+```
+
+**實體手機 2026-10-07 驗收結果：4/4 核心流程 PASS。**
+
+
 ---
 
 <a id="section-33"></a>
 # 33. 最新驗證摘要
 
-目前最新 Low-Latency working tree：
+目前最新 Android + Mobile LAN working tree：
 
 ```text
-438 passed
+447 passed
 0 failed
 0 skipped
 ```
+
+Android command-line unit tests：`18 passed / 0 failed / 0 skipped`。
 
 最近一次 focused regression：`68 passed`。另有 1 個既有 pytest cache permission warning。
 
@@ -2341,6 +2510,10 @@ fbd0406d... feat: add optional speaker diarization
 - capture 後 first API caption 約 5.8 秒，後續 lag 1.828–4.324 秒
 - normal STOP 0.110 秒，silent STOP 0.125 秒
 - 使用者人工 Web UI 驗收：低延遲勾選、Realtek Loopback、約 1:57 執行、38 字幕片段、最終 `stopped` 且字幕保留
+- Android App v0.1.0：Kotlin / Jetpack Compose，無需 Android Studio；APK build/signature/alignment PASS
+- Android unit tests：18 passed / 0 failed / 0 skipped
+- Mobile LAN auth：無 token 401、錯 token 401、正確 token 200、localhost 無 token 200、remote Overlay launch 403
+- 實體 Android 手機：YouTube Search、直接 YouTube URL、PC Low-Latency System Audio、手機檔案 Upload → PC Whisper → 字幕回手機，4/4 PASS
 
 Speaker Diarization 效能觀察（同類短媒體）：
 
@@ -2365,7 +2538,7 @@ Microphone real device / PCM / transcription
 Windows / PyAudioWPatch 沒有暴露 usable microphone input device
 ```
 
-Low-Latency Live ASR 已完成 backend real runtime 與使用者人工 UI acceptance；目前沒有其他 Low-Latency acceptance gate。
+Low-Latency Live ASR 已完成 backend real runtime 與使用者人工 UI acceptance。Android App v0.1.0 亦已完成實體手機 4/4 核心流程 acceptance；目前接受狀態見頁首矩陣，提交及推送狀態以 Git 紀錄為準。
 
 ---
 

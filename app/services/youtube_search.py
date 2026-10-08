@@ -17,6 +17,7 @@ from app.config import (
 )
 from app.services.errors import VideoExtractionError
 from app.services.youtube import YDL_OPTIONS
+from app.services.youtube_auth import extractor, with_auth_fallback
 
 
 YouTubeSearchSort = Literal[
@@ -174,11 +175,19 @@ def _extract_search_candidates(
     candidate_limit: int,
     ydl_factory: Callable[[dict[str, Any]], Any],
 ) -> list[Mapping[str, Any]]:
-    try:
-        with ydl_factory(
-            _youtube_options(flat=True, candidate_limit=candidate_limit)
-        ) as ydl:
+    def attempt(cookie_file):
+        with extractor(ydl_factory, _youtube_options(flat=True, candidate_limit=candidate_limit), cookie_file) as ydl:
             extracted = ydl.extract_info(target, download=False)
+            if not isinstance(extracted, Mapping):
+                raise VideoExtractionError(502, "youtube_search_failed", "YouTube returned an invalid search response.")
+            # Materialize lazy entries inside the retry boundary and context.
+            entries = extracted.get("entries")
+            return [entry for entry in ([] if entries is None else entries) if isinstance(entry, Mapping)]
+
+    try:
+        return with_auth_fallback(attempt)
+    except VideoExtractionError:
+        raise
     except DownloadError as exc:
         raise VideoExtractionError(
             502,
@@ -191,25 +200,6 @@ def _extract_search_candidates(
             "youtube_search_failed",
             "YouTube search failed unexpectedly.",
         ) from exc
-
-    if not isinstance(extracted, Mapping):
-        raise VideoExtractionError(
-            502,
-            "youtube_search_failed",
-            "YouTube returned an invalid search response.",
-        )
-    raw_entries = extracted.get("entries")
-    if raw_entries is None:
-        return []
-    try:
-        return [entry for entry in raw_entries if isinstance(entry, Mapping)]
-    except TypeError as exc:
-        raise VideoExtractionError(
-            502,
-            "youtube_search_failed",
-            "YouTube returned an invalid search result list.",
-        ) from exc
-
 
 def _merge_enriched_result(
     base: dict[str, Any], enriched: dict[str, Any]
@@ -239,10 +229,18 @@ def _enrich_candidates(
     skipped_count = 0
     options = _youtube_options(flat=False, candidate_limit=candidate_limit)
     try:
-        with ydl_factory(options) as ydl:
+        with extractor(ydl_factory, options) as ydl:
             for candidate in candidates:
+                def attempt(cookie_file):
+                    if cookie_file is None:
+                        return ydl.extract_info(candidate["url"], download=False)
+                    with extractor(ydl_factory, options, cookie_file) as authenticated:
+                        return authenticated.extract_info(candidate["url"], download=False)
+
                 try:
-                    info = ydl.extract_info(candidate["url"], download=False)
+                    info = with_auth_fallback(attempt)
+                except VideoExtractionError:
+                    raise
                 except Exception:
                     logger.warning(
                         "Skipping unavailable YouTube search candidate %s",

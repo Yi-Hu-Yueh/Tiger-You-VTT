@@ -13,7 +13,7 @@ from app.services.system_audio import CapturedPCM, SystemAudioDevice
 from app.services.whisper import TranscriptionResult
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 DEVICE = SystemAudioDevice(5, "Speakers [Loopback]", True, 8000, 1)
 CHUNK = CapturedPCM(b"\x00\x10" * 8000, 8000, 1, 2, 8000)
 SILENT_CHUNK = CapturedPCM(b"\x00\x00" * 8000, 8000, 1, 2, 8000)

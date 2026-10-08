@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from app.services.mobile_auth import MobileAuthMiddleware
 
 from app.routers.audio import router as audio_router
 from app.routers.jobs import router as jobs_router
@@ -11,6 +12,7 @@ from app.routers.youtube import router as youtube_router
 
 
 app = FastAPI(title="YouTube Subtitle Extractor", version="1.0.0")
+app.add_middleware(MobileAuthMiddleware)
 app.include_router(audio_router)
 app.include_router(youtube_router)
 app.include_router(video_router)

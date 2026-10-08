@@ -4,7 +4,7 @@ from app.main import app
 
 
 def html() -> str:
-    return TestClient(app).get("/").text
+    return TestClient(app, client=("127.0.0.1", 50000)).get("/").text
 
 
 def test_overlay_launcher_button_exists() -> None:

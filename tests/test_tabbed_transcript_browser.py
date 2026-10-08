@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def _chrome_path() -> Path:

@@ -10,7 +10,7 @@ from app.services.jobs import JobManager, _JobRecord
 from app.services.transcript import transcript_to_srt, transcript_to_txt, transcript_to_vtt
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 class FakeClock:

@@ -5,7 +5,7 @@ from app.main import app
 from app.services.errors import VideoExtractionError
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def response(query="query", sort="relevance", limit=10):

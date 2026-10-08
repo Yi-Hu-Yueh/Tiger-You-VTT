@@ -1,0 +1,23 @@
+NewPipe Extractor — Team NewPipe and contributors
+License: GNU GPL version 3 or later (see NewPipe-GPL-3.0.txt).
+Pinned dependency: com.github.teamnewpipe:NewPipeExtractor:v0.26.5
+Revision: f9e6bb808f82bf3e4dc1f2a29a16fd376931c8ef
+Source: https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.26.5
+No changes to upstream extractor code.
+
+Transitive runtime dependencies:
+NewPipe nanojson e9d656ddb49a412a5a0a5d5ef20ca7ef09549996 (MIT)
+jsoup 1.22.2 (MIT)
+jsr305 3.0.2 (Apache-2.0)
+protobuf-javalite 4.35.1 (BSD-3-Clause)
+Rhino / Rhino engine 1.8.1 (MPL-2.0)
+OkHttp 4.12.0 / Okio (Apache-2.0)
+desugar_jdk_libs_nio 2.1.5 (OpenJDK GPLv2 with Classpath Exception and other notices)
+Retain upstream notices and license terms when redistributing.
+
+The original Tiger source remains under its MIT notice. A combined application
+linking NewPipe is not an MIT-only distribution: GPL obligations including
+corresponding source must be addressed before public distribution.
+SenseVoice model assets remain separately licensed unmodified model data; see
+SenseVoice-FunASR-MODEL-LICENSE.txt and SenseVoice-SOURCE.txt. They are not
+relicensed under the extractor license. Redistribution review remains required.

@@ -7,7 +7,7 @@ from app.services.errors import VideoExtractionError
 from app.services.video import MediaInfo, MediaStream
 
 
-client = TestClient(app)
+client = TestClient(app, client=("127.0.0.1", 50000))
 
 
 def embedded_response(filename: str) -> dict[str, object]:
